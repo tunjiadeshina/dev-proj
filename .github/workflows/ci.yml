@@ -28,3 +28,20 @@ jobs:
       - name: Build Docker image
         run: |
           docker build -t devops-app:${{ github.sha }} .
+
+  deploy:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+
+    steps:
+     - name: Deploy to VM via SSH
+       uses: appleboy/ssh-action@v1.0.3
+       with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          script: |
+            docker pull <your-dockerhub-username>/devops-app:latest
+            docker stop devops-app || true
+            docker rm devops-app || true
+            docker run -d -p 80:8000 --name devops-app <your-dockerhub-username>/devops-app:latest
