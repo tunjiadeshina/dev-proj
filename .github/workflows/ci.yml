@@ -70,3 +70,4 @@ jobs:
 
             # Verify
             sudo docker ps | grep devops-app
+            
