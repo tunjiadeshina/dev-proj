@@ -2,6 +2,8 @@ from flask import Flask, jsonify
 import os
 import time
 import logging
+from prometheus_client import Counter, Histogram, make_wsgi_app
+from werkzeug.middleware.dispatcher import DispatcherMiddleware
 
 app = Flask(__name__)
 
@@ -13,6 +15,21 @@ VERSION = os.getenv("APP_VERSION", "1.0.0")
 
 REQUEST_COUNT = 0
 
+# Wrap Flask app with Prometheus WSGI app
+app.wsgi_app = DispatcherMiddleware(app.wsgi_app, {
+    "/metrics": make_wsgi_app()
+})
+
+@app.route("/")
+def home():
+    import time
+    with REQUEST_LATENCY.time():
+        REQUEST_COUNT.inc()
+        # simulate work
+        time.sleep(0.1)
+        REQUEST_STATUS.labels(status="200").inc()
+        return "DevOps App Running!"
+    
 @app.route("/")
 def home():
     global REQUEST_COUNT
