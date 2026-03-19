@@ -1,4 +1,4 @@
-name: CI Pipeline
+name: CI/CD Pipeline
 
 on:
   pull_request:
@@ -25,16 +25,25 @@ jobs:
         run: |
           PYTHONPATH=. pytest
 
+      - name: Log in to Docker Hub
+        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
       - name: Build Docker image
         run: |
-          docker build -t devops-app:${{ github.sha }} .
+          docker build -t adetunjiadeshina/devops-app:${{ github.sha }} .
+          docker tag adetunjiadeshina/devops-app:${{ github.sha }} adetunjiadeshina/devops-app:latest
+
+      - name: Push Docker image
+        run: |
+          docker push adetunjiadeshina/devops-app:${{ github.sha }}
+          docker push adetunjiadeshina/devops-app:latest
 
   deploy:
     needs: build-and-test
     runs-on: ubuntu-latest
 
     steps:
-      - name: Bootstrap VM & Deploy
+      - name: Deploy to VM via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VM_HOST }}
@@ -42,55 +51,22 @@ jobs:
           key: ${{ secrets.VM_SSH_KEY }}
           command_timeout: 10m
           script: |
-            # ── System update ───────────────────────────────────────────────
-            sudo apt-get update -y
-            sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
-
-            # ── Install Docker (skip if already installed) ───────────────────
-            if ! command -v docker &> /dev/null; then
-              echo "Docker not found, installing..."
-
-              sudo apt-get install -y \
-                ca-certificates \
-                curl \
-                gnupg \
-                lsb-release
-
-              sudo install -m 0755 -d /etc/apt/keyrings
-              curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
-                sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-              sudo chmod a+r /etc/apt/keyrings/docker.gpg
-
-              echo \
-                "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-                https://download.docker.com/linux/ubuntu \
-                $(lsb_release -cs) stable" | \
-                sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-              sudo apt-get update -y
-              sudo apt-get install -y docker-ce docker-ce-cli containerd.io
-
-              echo "Docker installed successfully"
-            else
-              echo "Docker already installed, skipping..."
-            fi
-
-            # ── Enable & start Docker service ────────────────────────────────
+            # Ensure Docker is running
             sudo systemctl enable docker
             sudo systemctl start docker
 
-            # Add user to docker group so sudo isn't needed on next run
-            sudo usermod -aG docker $USER || true
+            # Clean old container
+            sudo docker rm -f devops-app || true
 
-            # ── Deploy container ─────────────────────────────────────────────
+            # Pull latest image
             sudo docker pull adetunjiadeshina/devops-app:latest
-            sudo docker stop devops-app || true
-            sudo docker rm devops-app || true
+
+            # Run new container
             sudo docker run -d \
               -p 80:8000 \
               --name devops-app \
-              --restart unless-stopped \
+              --restart always \
               adetunjiadeshina/devops-app:latest
 
-            # ── Verify container is running ──────────────────────────────────
+            # Verify
             sudo docker ps | grep devops-app
