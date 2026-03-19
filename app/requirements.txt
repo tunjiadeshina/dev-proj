@@ -1,2 +1,4 @@
 flask
 pytest
+prometheus_client
+werkzeug
