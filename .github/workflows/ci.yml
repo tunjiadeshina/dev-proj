@@ -134,8 +134,7 @@ jobs:
             --name vm-ips/dev.ip \
             --file /tmp/dev.ip \
             --overwrite \
-            --account-key ${{ secrets.AZURE_STORAGE_KEY }}
-
+            --connection-string "${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}"
   # ── 4. Deploy to Dev ──────────────────────────────────────────
   deploy-dev:
     needs: terraform-dev
@@ -289,7 +288,7 @@ jobs:
             --name vm-ips/staging.ip \
             --file /tmp/staging.ip \
             --overwrite \
-            --auth-mode login
+            --connection-string "${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}"
 
   # ── 6. Deploy to Staging ──────────────────────────────────────
   deploy-staging:
@@ -446,7 +445,7 @@ jobs:
             --name vm-ips/prod.ip \
             --file /tmp/prod.ip \
             --overwrite \
-            --auth-mode login
+            --connection-string "${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}"
 
   # ── 8. Deploy to Prod ─────────────────────────────────────────
   deploy-prod:
