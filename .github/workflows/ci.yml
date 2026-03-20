@@ -1,20 +1,21 @@
-name: CI/CD Pipeline
+name: DevOps CI/CD Pipeline
 
 on:
   push:
-    branches: [ "dev", "staging", "main" ]
+    branches:
+      - dev        # triggers auto deploy to dev
+      - stage      # triggers deploy to stage
+      - main       # triggers deploy to prod
   pull_request:
-    branches: [ "dev", "staging", "main" ]
+    branches:
+      - stage      # runs build/test checks only when PR targets stage
+      - main       # runs build/test checks only when PR targets main  
 
 env:
-  ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
-  ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
-  ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
-  ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
   IMAGE_NAME: adetunjiadeshina/devops-app
 
 jobs:
-  # ── 1. Build & Test ───────────────────────────────────────────
+  # ── Build & Test ──────────────────────────────────────────────
   build-and-test:
     runs-on: ubuntu-latest
     steps:
@@ -40,7 +41,7 @@ jobs:
           pip install safety
           safety check -r app/requirements.txt
 
-  # ── 2. Docker Build & Push ────────────────────────────────────
+  # ── Docker Build & Push ───────────────────────────────────────
   docker-build-push:
     needs: build-and-test
     runs-on: ubuntu-latest
@@ -53,6 +54,7 @@ jobs:
       - name: Set image tag based on branch
         id: tag
         run: |
+          # Use base_ref for PRs, ref for direct pushes
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             BRANCH="${{ github.base_ref }}"
           else
@@ -61,12 +63,12 @@ jobs:
 
           if [[ "$BRANCH" == "dev" ]]; then
             echo "TAG=dev" >> $GITHUB_OUTPUT
-          elif [[ "$BRANCH" == "staging" ]]; then
+          elif [[ "$BRANCH" == "stage" ]]; then
             echo "TAG=stage" >> $GITHUB_OUTPUT
           elif [[ "$BRANCH" == "main" ]]; then
             echo "TAG=prod" >> $GITHUB_OUTPUT
           else
-            echo "TAG=dev" >> $GITHUB_OUTPUT
+            echo "TAG=dev" >> $GITHUB_OUTPUT  # fallback
           fi
 
       - name: Validate tag
@@ -75,7 +77,7 @@ jobs:
             echo "ERROR: TAG is empty, cannot build image"
             exit 1
           fi
-          echo "Building with tag: ${{ steps.tag.outputs.TAG }}"
+          echo "Building with tag: ${{ steps.tag.outputs.TAG }}"  
 
       - name: Build and push Docker image
         run: |
@@ -85,108 +87,26 @@ jobs:
           docker push ${{ env.IMAGE_NAME }}:${{ github.sha }}
           docker push ${{ env.IMAGE_NAME }}:$TAG
 
-  # ── 3. Terraform - Dev ────────────────────────────────────────
-  terraform-dev:
-    needs: docker-build-push
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/dev' && github.event_name == 'push'
-    defaults:
-      run:
-        working-directory: terraform/dev
-    outputs:
-      vm_ip: ${{ steps.tf_output.outputs.vm_ip }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Azure Login
-        uses: azure/login@v1
-        with:
-          creds: '{"clientId":"${{ secrets.ARM_CLIENT_ID }}","clientSecret":"${{ secrets.ARM_CLIENT_SECRET }}","subscriptionId":"${{ secrets.ARM_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.ARM_TENANT_ID }}"}'
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_wrapper: false
-
-      - name: Terraform Init
-        run: terraform init
-
-      - name: Terraform Plan
-        run: terraform plan -out=tfplan
-        env:
-          TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
-
-      - name: Terraform Apply
-        run: terraform apply -auto-approve tfplan
-        env:
-          TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
-
-      - name: Get VM IP
-        id: tf_output
-        run: echo "vm_ip=$(terraform output -raw vm_public_ip)" >> $GITHUB_OUTPUT
-
-      - name: Save Dev VM IP to blob storage
-        run: |
-          echo "${{ steps.tf_output.outputs.vm_ip }}" > /tmp/dev.ip
-          az storage blob upload \
-            --account-name tfstatedevops \
-            --container-name tfstate \
-            --name vm-ips/dev.ip \
-            --file /tmp/dev.ip \
-            --overwrite \
-            --connection-string "${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}"
-  # ── 4. Deploy to Dev ──────────────────────────────────────────
+  # ── Deploy to Dev (Automatic on push to dev) ──────────────────
   deploy-dev:
-    needs: terraform-dev
-    runs-on: ubuntu-latest
+    needs: docker-build-push
     if: github.ref == 'refs/heads/dev' && github.event_name == 'push'
+    runs-on: ubuntu-latest
     environment:
       name: dev
     steps:
       - name: Deploy to Dev VM
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ needs.terraform-dev.outputs.vm_ip }}
+          host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
-          command_timeout: 10m
           script: |
-            # ── Bootstrap Docker ─────────────────────────────────
-            if ! command -v docker &> /dev/null; then
-              sudo apt-get update -y
-              sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
-              sudo apt-get install -y ca-certificates curl gnupg
-              sudo install -m 0755 -d /etc/apt/keyrings
-              curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
-                sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-              echo \
-                "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-                https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
-                sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-              sudo apt-get update -y
-              sudo apt-get install -y docker-ce docker-ce-cli containerd.io
-            fi
-            sudo systemctl enable docker
-            sudo systemctl start docker
-
-            # ── Deploy App ───────────────────────────────────────
             IMAGE="adetunjiadeshina/devops-app:dev"
-            VERSION="${GITHUB_REF_NAME}-$(echo $GITHUB_SHA | cut -c1-7)"
-            COMMIT="${GITHUB_SHA}"
-            ENVIRONMENT="dev"
-
-            echo "📦 Pulling new image..."
-            sudo docker pull $IMAGE
-
-            echo "💾 Saving current running image (if exists)..."
-            PREVIOUS_IMAGE=$(sudo docker inspect --format='{{.Config.Image}}' devops-app 2>/dev/null || echo "")
-
-            echo "🛑 Stopping existing container..."
-            sudo docker stop devops-app || true
-            sudo docker rm devops-app || true
-
-            echo "🚀 Starting new container..."
-            sudo docker run -d \
+            docker pull $IMAGE
+            docker stop devops-app || true
+            docker rm devops-app || true
+            docker run -d \
               -p 80:8000 \
               --name devops-app \
               --restart unless-stopped \
@@ -194,154 +114,39 @@ jobs:
               -e APP_COMMIT=$COMMIT \
               -e APP_ENV=$ENVIRONMENT \
               $IMAGE
+            docker ps | grep devops-app
 
-            echo "⏳ Waiting for application to start..."
-            sleep 10
-
-            echo "🩺 Running health check..."
-            if curl -f http://localhost/health; then
-              echo "✅ Deployment successful!"
-            else
-              echo "❌ Deployment failed! Initiating rollback..."
-              sudo docker stop devops-app || true
-              sudo docker rm devops-app || true
-              if [ ! -z "$PREVIOUS_IMAGE" ]; then
-                echo "🔙 Rolling back to previous image: $PREVIOUS_IMAGE"
-                sudo docker run -d \
-                  -p 80:8000 \
-                  --name devops-app \
-                  --restart unless-stopped \
-                  $PREVIOUS_IMAGE
-                echo "✅ Rollback successful!"
-              else
-                echo "⚠️ No previous image found, manual intervention required!"
-              fi
-              exit 1
-            fi
-
-            # ── Deploy Node Exporter ─────────────────────────────
-            sudo docker stop node-exporter || true
-            sudo docker rm node-exporter || true
-            sudo docker run -d \
-              --name node-exporter \
-              --restart unless-stopped \
-              --network="host" \
-              --pid="host" \
-              -v /proc:/host/proc:ro \
-              -v /sys:/host/sys:ro \
-              -v /:/rootfs:ro \
-              prom/node-exporter \
-              --path.procfs=/host/proc \
-              --path.sysfs=/host/sys \
-              --path.rootfs=/rootfs \
-              --collector.filesystem.mount-points-exclude='^/(sys|proc|dev|host|etc)($$|/)'
-
-            echo "✅ App and Node Exporter running on dev"
-            sudo docker ps
-
-  # ── 5. Terraform - Staging ────────────────────────────────────
-  terraform-staging:
+  # ── Deploy to Stage (Manual approval, from stage branch) ──────
+  deploy-stage:
     needs: docker-build-push
+    if: github.ref == 'refs/heads/stage' && github.event_name == 'push'
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/staging' && github.event_name == 'push'
-    defaults:
-      run:
-        working-directory: terraform/staging
-    outputs:
-      vm_ip: ${{ steps.tf_output.outputs.vm_ip }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Azure Login
-        uses: azure/login@v1
-        with:
-          creds: '{"clientId":"${{ secrets.ARM_CLIENT_ID }}","clientSecret":"${{ secrets.ARM_CLIENT_SECRET }}","subscriptionId":"${{ secrets.ARM_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.ARM_TENANT_ID }}"}'
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_wrapper: false
-
-      - name: Terraform Init
-        run: terraform init
-
-      - name: Terraform Plan
-        run: terraform plan -out=tfplan
-        env:
-          TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
-
-      - name: Terraform Apply
-        run: terraform apply -auto-approve tfplan
-        env:
-          TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
-
-      - name: Get VM IP
-        id: tf_output
-        run: echo "vm_ip=$(terraform output -raw vm_public_ip)" >> $GITHUB_OUTPUT
-
-      - name: Save Staging VM IP to blob storage
-        run: |
-          echo "${{ steps.tf_output.outputs.vm_ip }}" > /tmp/staging.ip
-          az storage blob upload \
-            --account-name tfstatedevops \
-            --container-name tfstate \
-            --name vm-ips/staging.ip \
-            --file /tmp/staging.ip \
-            --overwrite \
-            --connection-string "${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}"
-
-  # ── 6. Deploy to Staging ──────────────────────────────────────
-  deploy-staging:
-    needs: terraform-staging
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/staging' && github.event_name == 'push'
     environment:
-      name: staging
+      name: stage       # GitHub will pause here and wait for approval
     steps:
-      - name: Deploy to Staging VM
+      - name: Deploy to Stage VM
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ needs.terraform-staging.outputs.vm_ip }}
+          host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
-          command_timeout: 10m
           script: |
-            # ── Bootstrap Docker ─────────────────────────────────
-            if ! command -v docker &> /dev/null; then
-              sudo apt-get update -y
-              sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
-              sudo apt-get install -y ca-certificates curl gnupg
-              sudo install -m 0755 -d /etc/apt/keyrings
-              curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
-                sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-              echo \
-                "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-                https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
-                sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-              sudo apt-get update -y
-              sudo apt-get install -y docker-ce docker-ce-cli containerd.io
-            fi
-            sudo systemctl enable docker
-            sudo systemctl start docker
-
-            # ── Deploy App ───────────────────────────────────────
             IMAGE="adetunjiadeshina/devops-app:stage"
             VERSION="${GITHUB_REF_NAME}-$(echo $GITHUB_SHA | cut -c1-7)"
             COMMIT="${GITHUB_SHA}"
-            ENVIRONMENT="staging"
-
+            ENVIRONMENT="stage"
             echo "📦 Pulling new image..."
-            sudo docker pull $IMAGE
+            docker pull $IMAGE
 
             echo "💾 Saving current running image (if exists)..."
-            PREVIOUS_IMAGE=$(sudo docker inspect --format='{{.Config.Image}}' devops-app 2>/dev/null || echo "")
-
+            PREVIOUS_IMAGE=$(docker inspect --format='{{.Config.Image}}' devops-app 2>/dev/null || echo "")
+            
             echo "🛑 Stopping existing container..."
-            sudo docker stop devops-app || true
-            sudo docker rm devops-app || true
+            docker stop devops-app || true
+            docker rm devops-app || true
 
             echo "🚀 Starting new container..."
-            sudo docker run -d \
+            docker run -d \
               -p 80:8000 \
               --name devops-app \
               --restart unless-stopped \
@@ -358,11 +163,11 @@ jobs:
               echo "✅ Deployment successful!"
             else
               echo "❌ Deployment failed! Initiating rollback..."
-              sudo docker stop devops-app || true
-              sudo docker rm devops-app || true
+              docker stop devops-app || true
+              docker rm devops-app || true
               if [ ! -z "$PREVIOUS_IMAGE" ]; then
                 echo "🔙 Rolling back to previous image: $PREVIOUS_IMAGE"
-                sudo docker run -d \
+                docker run -d \
                   -p 80:8000 \
                   --name devops-app \
                   --restart unless-stopped \
@@ -373,132 +178,40 @@ jobs:
               fi
               exit 1
             fi
+            echo "📊 Verifying running container..."
+            docker ps | grep devops-app
 
-            # ── Deploy Node Exporter ─────────────────────────────
-            sudo docker stop node-exporter || true
-            sudo docker rm node-exporter || true
-            sudo docker run -d \
-              --name node-exporter \
-              --restart unless-stopped \
-              --network="host" \
-              --pid="host" \
-              -v /proc:/host/proc:ro \
-              -v /sys:/host/sys:ro \
-              -v /:/rootfs:ro \
-              prom/node-exporter \
-              --path.procfs=/host/proc \
-              --path.sysfs=/host/sys \
-              --path.rootfs=/rootfs \
-              --collector.filesystem.mount-points-exclude='^/(sys|proc|dev|host|etc)($$|/)'
-
-            echo "✅ App and Node Exporter running on staging"
-            sudo docker ps
-
-  # ── 7. Terraform - Prod ───────────────────────────────────────
-  terraform-prod:
-    needs: docker-build-push
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    environment:
-      name: production
-    defaults:
-      run:
-        working-directory: terraform/prod
-    outputs:
-      vm_ip: ${{ steps.tf_output.outputs.vm_ip }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Azure Login
-        uses: azure/login@v1
-        with:
-          creds: '{"clientId":"${{ secrets.ARM_CLIENT_ID }}","clientSecret":"${{ secrets.ARM_CLIENT_SECRET }}","subscriptionId":"${{ secrets.ARM_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.ARM_TENANT_ID }}"}'
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_wrapper: false
-
-      - name: Terraform Init
-        run: terraform init
-
-      - name: Terraform Plan
-        run: terraform plan -out=tfplan
-        env:
-          TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
-
-      - name: Terraform Apply
-        run: terraform apply -auto-approve tfplan
-        env:
-          TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
-
-      - name: Get VM IP
-        id: tf_output
-        run: echo "vm_ip=$(terraform output -raw vm_public_ip)" >> $GITHUB_OUTPUT
-
-      - name: Save Prod VM IP to blob storage
-        run: |
-          echo "${{ steps.tf_output.outputs.vm_ip }}" > /tmp/prod.ip
-          az storage blob upload \
-            --account-name tfstatedevops \
-            --container-name tfstate \
-            --name vm-ips/prod.ip \
-            --file /tmp/prod.ip \
-            --overwrite \
-            --connection-string "${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}"
-
-  # ── 8. Deploy to Prod ─────────────────────────────────────────
+  # ── Deploy to Prod (Manual approval, from main branch) ────────
   deploy-prod:
-    needs: terraform-prod
-    runs-on: ubuntu-latest
+    needs: docker-build-push
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
     environment:
-      name: production
+      name: main       
     steps:
       - name: Deploy to Prod VM
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ needs.terraform-prod.outputs.vm_ip }}
+          host: ${{ secrets.VM_HOST }}       
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
-          command_timeout: 10m
           script: |
-            # ── Bootstrap Docker ─────────────────────────────────
-            if ! command -v docker &> /dev/null; then
-              sudo apt-get update -y
-              sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
-              sudo apt-get install -y ca-certificates curl gnupg
-              sudo install -m 0755 -d /etc/apt/keyrings
-              curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
-                sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-              echo \
-                "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-                https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
-                sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-              sudo apt-get update -y
-              sudo apt-get install -y docker-ce docker-ce-cli containerd.io
-            fi
-            sudo systemctl enable docker
-            sudo systemctl start docker
-
-            # ── Deploy App ───────────────────────────────────────
             IMAGE="adetunjiadeshina/devops-app:prod"
             VERSION="${GITHUB_REF_NAME}-$(echo $GITHUB_SHA | cut -c1-7)"
             COMMIT="${GITHUB_SHA}"
             ENVIRONMENT="prod"
-
             echo "📦 Pulling new image..."
-            sudo docker pull $IMAGE
+            docker pull $IMAGE
 
             echo "💾 Saving current running image (if exists)..."
-            PREVIOUS_IMAGE=$(sudo docker inspect --format='{{.Config.Image}}' devops-app 2>/dev/null || echo "")
-
+            PREVIOUS_IMAGE=$(docker inspect --format='{{.Config.Image}}' devops-app 2>/dev/null || echo "")
+            
             echo "🛑 Stopping existing container..."
-            sudo docker stop devops-app || true
-            sudo docker rm devops-app || true
+            docker stop devops-app || true
+            docker rm devops-app || true
 
             echo "🚀 Starting new container..."
-            sudo docker run -d \
+            docker run -d \
               -p 80:8000 \
               --name devops-app \
               --restart unless-stopped \
@@ -515,11 +228,11 @@ jobs:
               echo "✅ Deployment successful!"
             else
               echo "❌ Deployment failed! Initiating rollback..."
-              sudo docker stop devops-app || true
-              sudo docker rm devops-app || true
+              docker stop devops-app || true
+              docker rm devops-app || true
               if [ ! -z "$PREVIOUS_IMAGE" ]; then
                 echo "🔙 Rolling back to previous image: $PREVIOUS_IMAGE"
-                sudo docker run -d \
+                docker run -d \
                   -p 80:8000 \
                   --name devops-app \
                   --restart unless-stopped \
@@ -530,215 +243,5 @@ jobs:
               fi
               exit 1
             fi
-
-            # ── Deploy Node Exporter ─────────────────────────────
-            sudo docker stop node-exporter || true
-            sudo docker rm node-exporter || true
-            sudo docker run -d \
-              --name node-exporter \
-              --restart unless-stopped \
-              --network="host" \
-              --pid="host" \
-              -v /proc:/host/proc:ro \
-              -v /sys:/host/sys:ro \
-              -v /:/rootfs:ro \
-              prom/node-exporter \
-              --path.procfs=/host/proc \
-              --path.sysfs=/host/sys \
-              --path.rootfs=/rootfs \
-              --collector.filesystem.mount-points-exclude='^/(sys|proc|dev|host|etc)($$|/)'
-
-            echo "✅ App and Node Exporter running on prod"
-            sudo docker ps
-
-  # ── 9. Terraform - Monitoring ─────────────────────────────────
-  terraform-monitoring:
-    needs: deploy-prod
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    defaults:
-      run:
-        working-directory: terraform/monitoring
-    outputs:
-      monitoring_ip: ${{ steps.tf_output.outputs.monitoring_ip }}
-      dev_vm_ip: ${{ steps.read_ips.outputs.dev_vm_ip }}
-      staging_vm_ip: ${{ steps.read_ips.outputs.staging_vm_ip }}
-      prod_vm_ip: ${{ steps.read_ips.outputs.prod_vm_ip }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Azure Login
-        uses: azure/login@v1
-        with:
-          creds: '{"clientId":"${{ secrets.ARM_CLIENT_ID }}","clientSecret":"${{ secrets.ARM_CLIENT_SECRET }}","subscriptionId":"${{ secrets.ARM_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.ARM_TENANT_ID }}"}'
-
-      - name: Read all VM IPs from blob storage
-        id: read_ips
-        run: |
-          DEV_IP=$(az storage blob download \
-            --account-name tfstatedevops \
-            --container-name tfstate \
-            --name vm-ips/dev.ip \
-            --file /tmp/dev.ip \
-            --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
-            2>/dev/null && cat /tmp/dev.ip || echo "0.0.0.0")
-
-          STAGING_IP=$(az storage blob download \
-            --account-name tfstatedevops \
-            --container-name tfstate \
-            --name vm-ips/staging.ip \
-            --file /tmp/staging.ip \
-            --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
-            2>/dev/null && cat /tmp/staging.ip || echo "0.0.0.0")
-
-          PROD_IP=$(az storage blob download \
-            --account-name tfstatedevops \
-            --container-name tfstate \
-            --name vm-ips/prod.ip \
-            --file /tmp/prod.ip \
-            --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
-            2>/dev/null && cat /tmp/prod.ip || echo "0.0.0.0")
-
-          echo "dev_vm_ip=$DEV_IP" >> $GITHUB_OUTPUT
-          echo "staging_vm_ip=$STAGING_IP" >> $GITHUB_OUTPUT
-          echo "prod_vm_ip=$PROD_IP" >> $GITHUB_OUTPUT
-
-          echo "✅ Dev IP: $DEV_IP"
-          echo "✅ Staging IP: $STAGING_IP"
-          echo "✅ Prod IP: $PROD_IP"
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_wrapper: false
-
-      - name: Terraform Init
-        run: terraform init
-
-      - name: Terraform Plan
-        run: terraform plan -out=tfplan
-        env:
-          TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
-          TF_VAR_dev_vm_ip: ${{ steps.read_ips.outputs.dev_vm_ip }}
-          TF_VAR_staging_vm_ip: ${{ steps.read_ips.outputs.staging_vm_ip }}
-          TF_VAR_prod_vm_ip: ${{ steps.read_ips.outputs.prod_vm_ip }}
-
-      - name: Terraform Apply
-        run: terraform apply -auto-approve tfplan
-        env:
-          TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
-          TF_VAR_dev_vm_ip: ${{ steps.read_ips.outputs.dev_vm_ip }}
-          TF_VAR_staging_vm_ip: ${{ steps.read_ips.outputs.staging_vm_ip }}
-          TF_VAR_prod_vm_ip: ${{ steps.read_ips.outputs.prod_vm_ip }}
-
-      - name: Get Monitoring VM IP
-        id: tf_output
-        run: echo "monitoring_ip=$(terraform output -raw monitoring_vm_public_ip)" >> $GITHUB_OUTPUT
-
-  # ── 10. Deploy Prometheus + Grafana ───────────────────────────
-  deploy-monitoring:
-    needs: terraform-monitoring
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    environment:
-      name: production
-    steps:
-      - name: Deploy Prometheus and Grafana
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ needs.terraform-monitoring.outputs.monitoring_ip }}
-          username: ${{ secrets.VM_USER }}
-          key: ${{ secrets.VM_SSH_KEY }}
-          command_timeout: 15m
-          script: |
-            # ── Bootstrap Docker ─────────────────────────────────
-            if ! command -v docker &> /dev/null; then
-              sudo apt-get update -y
-              sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
-              sudo apt-get install -y ca-certificates curl gnupg
-              sudo install -m 0755 -d /etc/apt/keyrings
-              curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
-                sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-              echo \
-                "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-                https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
-                sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-              sudo apt-get update -y
-              sudo apt-get install -y docker-ce docker-ce-cli containerd.io
-            fi
-            sudo systemctl enable docker
-            sudo systemctl start docker
-
-            # ── Write Prometheus config ───────────────────────────
-            sudo mkdir -p /etc/prometheus
-            sudo tee /etc/prometheus/prometheus.yml > /dev/null <<EOF
-            global:
-              scrape_interval: 15s
-              evaluation_interval: 15s
-
-            scrape_configs:
-              - job_name: 'node-dev'
-                static_configs:
-                  - targets: ['${DEV_VM_IP}:9100']
-                    labels:
-                      env: 'dev'
-                      vm: 'dev-vm'
-
-              - job_name: 'node-staging'
-                static_configs:
-                  - targets: ['${STAGING_VM_IP}:9100']
-                    labels:
-                      env: 'staging'
-                      vm: 'staging-vm'
-
-              - job_name: 'node-prod'
-                static_configs:
-                  - targets: ['${PROD_VM_IP}:9100']
-                    labels:
-                      env: 'prod'
-                      vm: 'prod-vm'
-            EOF
-
-            # ── Write Grafana datasource provisioning ─────────────
-            sudo mkdir -p /etc/grafana/provisioning/datasources
-            sudo tee /etc/grafana/provisioning/datasources/prometheus.yaml > /dev/null <<EOF
-            apiVersion: 1
-            datasources:
-              - name: Prometheus
-                type: prometheus
-                access: proxy
-                url: http://localhost:9090
-                isDefault: true
-                jsonData:
-                  timeInterval: "15s"
-            EOF
-
-            # ── Deploy Prometheus ─────────────────────────────────
-            sudo docker stop prometheus || true
-            sudo docker rm prometheus || true
-            sudo docker run -d \
-              -p 9090:9090 \
-              --name prometheus \
-              --restart unless-stopped \
-              --network="host" \
-              -v /etc/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml \
-              prom/prometheus
-
-            # ── Deploy Grafana ────────────────────────────────────
-            sudo docker stop grafana || true
-            sudo docker rm grafana || true
-            sudo docker run -d \
-              -p 3000:3000 \
-              --name grafana \
-              --restart unless-stopped \
-              -v grafana-storage:/var/lib/grafana \
-              -v /etc/grafana/provisioning:/etc/grafana/provisioning \
-              grafana/grafana
-
-            echo "✅ Prometheus running at http://$HOSTNAME:9090"
-            echo "✅ Grafana running at http://$HOSTNAME:3000"
-            sudo docker ps
-        env:
-          DEV_VM_IP: ${{ needs.terraform-monitoring.outputs.dev_vm_ip }}
-          STAGING_VM_IP: ${{ needs.terraform-monitoring.outputs.staging_vm_ip }}
-          PROD_VM_IP: ${{ needs.terraform-monitoring.outputs.prod_vm_ip }}
+            echo "📊 Verifying running container..."
+            docker ps | grep devops-app
