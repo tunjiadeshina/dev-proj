@@ -9,6 +9,8 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
 VERSION = os.getenv("APP_VERSION", "1.0.0")
+COMMIT = os.getenv("APP_COMMIT", "unknown")
+ENV = os.getenv("APP_ENV", "dev")
 
 REQUEST_COUNT = Counter("app_requests_total", "Total request count")
 REQUEST_LATENCY = Histogram("app_request_latency_seconds", "Request latency")
@@ -33,7 +35,12 @@ def health():
 
 @app.route("/version")
 def version():
-    return {"version": VERSION}, 200
+    return jsonify({
+        "version": VERSION,
+        "commit": COMMIT,
+        "environment": ENV,
+        "timestamp": time.time()
+    }), 200
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
