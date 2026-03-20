@@ -1,7 +1,8 @@
-name: CI/CD Pipeline
+name: DevOps CI/CD Pipeline
 
 on:
   push:
+<<<<<<< HEAD
     branches: [ "dev", "staging", "main" ]
   pull_request:
     branches: [ "dev", "staging", "main" ]
@@ -15,6 +16,18 @@ env:
 
 jobs:
   # ── 1. Build & Test ───────────────────────────────────────────
+=======
+    branches:
+      - dev        
+      - stage      
+      - main       
+
+env:
+  IMAGE_NAME: adetunjiadeshina/devops-app
+
+jobs:
+  # ── Build & Test ──────────────────────────────────────────────
+>>>>>>> 3b8c5e9 (test: trigger dev pipeline)
   build-and-test:
     runs-on: ubuntu-latest
     steps:
@@ -40,7 +53,11 @@ jobs:
           pip install safety
           safety check -r app/requirements.txt
 
+<<<<<<< HEAD
   # ── 2. Docker Build & Push ────────────────────────────────────
+=======
+  # ── Docker Build & Push ───────────────────────────────────────
+>>>>>>> 3b8c5e9 (test: trigger dev pipeline)
   docker-build-push:
     needs: build-and-test
     runs-on: ubuntu-latest
@@ -53,6 +70,7 @@ jobs:
       - name: Set image tag based on branch
         id: tag
         run: |
+<<<<<<< HEAD
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             BRANCH="${{ github.base_ref }}"
           else
@@ -77,6 +95,16 @@ jobs:
           fi
           echo "Building with tag: ${{ steps.tag.outputs.TAG }}"
 
+=======
+          if [[ "${{ github.ref }}" == "refs/heads/dev" ]]; then
+            echo "TAG=dev" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == "refs/heads/stage" ]]; then
+            echo "TAG=stage" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "TAG=prod" >> $GITHUB_OUTPUT
+          fi
+
+>>>>>>> 3b8c5e9 (test: trigger dev pipeline)
       - name: Build and push Docker image
         run: |
           TAG=${{ steps.tag.outputs.TAG }}
@@ -85,6 +113,7 @@ jobs:
           docker push ${{ env.IMAGE_NAME }}:${{ github.sha }}
           docker push ${{ env.IMAGE_NAME }}:$TAG
 
+<<<<<<< HEAD
   # ── 3. Terraform - Dev ────────────────────────────────────────
   terraform-dev:
     needs: docker-build-push
@@ -121,6 +150,13 @@ jobs:
     needs: terraform-dev
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/dev' && github.event_name == 'push'
+=======
+  # ── Deploy to Dev (Automatic on push to dev) ──────────────────
+  deploy-dev:
+    needs: docker-build-push
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+>>>>>>> 3b8c5e9 (test: trigger dev pipeline)
     environment:
       name: dev
     steps:
@@ -130,8 +166,8 @@ jobs:
           host: ${{ needs.terraform-dev.outputs.vm_ip }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
-          command_timeout: 10m
           script: |
+<<<<<<< HEAD
             # Bootstrap Docker if needed
             if ! command -v docker &> /dev/null; then
               sudo apt-get update -y
@@ -355,10 +391,57 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     environment:
       name: production
+=======
+            IMAGE="adetunjiadeshina/devops-app:dev"
+            docker pull $IMAGE
+            docker stop devops-app || true
+            docker rm devops-app || true
+            docker run -d \
+              -p 80:8000 \
+              --name devops-app \
+              --restart unless-stopped \
+              $IMAGE
+            docker ps | grep devops-app
+
+  # ── Deploy to Stage (Manual approval, from stage branch) ──────
+  deploy-stage:
+    needs: docker-build-push
+    if: github.ref == 'refs/heads/stage'
+    runs-on: ubuntu-latest
+    environment:
+      name: stage       # GitHub will pause here and wait for approval
+    steps:
+      - name: Deploy to Stage VM
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          script: |
+            IMAGE="adetunjiadeshina/devops-app:stage"
+            docker pull $IMAGE
+            docker stop devops-app || true
+            docker rm devops-app || true
+            docker run -d \
+              -p 80:8000 \
+              --name devops-app \
+              --restart unless-stopped \
+              $IMAGE
+            docker ps | grep devops-app
+
+  # ── Deploy to Prod (Manual approval, from main branch) ────────
+  deploy-prod:
+    needs: docker-build-push
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: main        # 👈 matches your GitHub environment name
+>>>>>>> 3b8c5e9 (test: trigger dev pipeline)
     steps:
       - name: Deploy to Prod VM
         uses: appleboy/ssh-action@v1.0.3
         with:
+<<<<<<< HEAD
           host: ${{ needs.terraform-prod.outputs.vm_ip }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
@@ -430,3 +513,19 @@ jobs:
               exit 1
             fi
             sudo docker ps | grep devops-app
+=======
+          host: ${{ secrets.VM_HOST }}       # 👈 secrets scoped to main environment
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          script: |
+            IMAGE="adetunjiadeshina/devops-app:prod"
+            docker pull $IMAGE
+            docker stop devops-app || true
+            docker rm devops-app || true
+            docker run -d \
+              -p 80:8000 \
+              --name devops-app \
+              --restart unless-stopped \
+              $IMAGE
+            docker ps | grep devops-app
+>>>>>>> 3b8c5e9 (test: trigger dev pipeline)
