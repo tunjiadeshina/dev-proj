@@ -2,9 +2,9 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ "dev", "staging", "main" ]
+    branches: [ "dev", "stage", "main" ]
   pull_request:
-    branches: [ "dev", "staging", "main" ]
+    branches: [ "dev", "stage", "main" ]
 
 env:
   ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
@@ -61,7 +61,7 @@ jobs:
 
           if [[ "$BRANCH" == "dev" ]]; then
             echo "TAG=dev" >> $GITHUB_OUTPUT
-          elif [[ "$BRANCH" == "staging" ]]; then
+          elif [[ "$BRANCH" == "stage" ]]; then
             echo "TAG=stage" >> $GITHUB_OUTPUT
           elif [[ "$BRANCH" == "main" ]]; then
             echo "TAG=prod" >> $GITHUB_OUTPUT
@@ -239,14 +239,14 @@ jobs:
             echo "✅ App and Node Exporter running on dev"
             sudo docker ps
 
-  # ── 5. Terraform - Staging ────────────────────────────────────
-  terraform-staging:
+  # ── 5. Terraform - stage ────────────────────────────────────
+  terraform-stage:
     needs: docker-build-push
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/staging' && github.event_name == 'push'
+    if: github.ref == 'refs/heads/stage' && github.event_name == 'push'
     defaults:
       run:
-        working-directory: terraform/staging
+        working-directory: terraform/stage
     outputs:
       vm_ip: ${{ steps.tf_output.outputs.vm_ip }}
     steps:
@@ -279,29 +279,29 @@ jobs:
         id: tf_output
         run: echo "vm_ip=$(terraform output -raw vm_public_ip)" >> $GITHUB_OUTPUT
 
-      - name: Save Staging VM IP to blob storage
+      - name: Save stage VM IP to blob storage
         run: |
-          echo "${{ steps.tf_output.outputs.vm_ip }}" > /tmp/staging.ip
+          echo "${{ steps.tf_output.outputs.vm_ip }}" > /tmp/stage.ip
           az storage blob upload \
             --account-name tfstatedevops \
             --container-name tfstate \
-            --name vm-ips/staging.ip \
-            --file /tmp/staging.ip \
+            --name vm-ips/stage.ip \
+            --file /tmp/stage.ip \
             --overwrite \
             --connection-string "${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}"
 
-  # ── 6. Deploy to Staging ──────────────────────────────────────
-  deploy-staging:
-    needs: terraform-staging
+  # ── 6. Deploy to stage ──────────────────────────────────────
+  deploy-stage:
+    needs: terraform-stage
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/staging' && github.event_name == 'push'
+    if: github.ref == 'refs/heads/stage' && github.event_name == 'push'
     environment:
-      name: staging
+      name: stage
     steps:
-      - name: Deploy to Staging VM
+      - name: Deploy to stage VM
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ needs.terraform-staging.outputs.vm_ip }}
+          host: ${{ needs.terraform-stage.outputs.vm_ip }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           command_timeout: 10m
@@ -328,7 +328,7 @@ jobs:
             IMAGE="adetunjiadeshina/devops-app:stage"
             VERSION="${GITHUB_REF_NAME}-$(echo $GITHUB_SHA | cut -c1-7)"
             COMMIT="${GITHUB_SHA}"
-            ENVIRONMENT="staging"
+            ENVIRONMENT="stage"
 
             echo "📦 Pulling new image..."
             sudo docker pull $IMAGE
@@ -391,7 +391,7 @@ jobs:
               --path.rootfs=/rootfs \
               --collector.filesystem.mount-points-exclude='^/(sys|proc|dev|host|etc)($$|/)'
 
-            echo "✅ App and Node Exporter running on staging"
+            echo "✅ App and Node Exporter running on stage"
             sudo docker ps
 
   # ── 7. Terraform - Prod ───────────────────────────────────────
@@ -562,7 +562,7 @@ jobs:
     outputs:
       monitoring_ip: ${{ steps.tf_output.outputs.monitoring_ip }}
       dev_vm_ip: ${{ steps.read_ips.outputs.dev_vm_ip }}
-      staging_vm_ip: ${{ steps.read_ips.outputs.staging_vm_ip }}
+      stage_vm_ip: ${{ steps.read_ips.outputs.stage_vm_ip }}
       prod_vm_ip: ${{ steps.read_ips.outputs.prod_vm_ip }}
     steps:
       - uses: actions/checkout@v4
@@ -583,13 +583,13 @@ jobs:
             --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
             2>/dev/null && cat /tmp/dev.ip || echo "0.0.0.0")
 
-          STAGING_IP=$(az storage blob download \
+          stage_IP=$(az storage blob download \
             --account-name tfstatedevops \
             --container-name tfstate \
-            --name vm-ips/staging.ip \
-            --file /tmp/staging.ip \
+            --name vm-ips/stage.ip \
+            --file /tmp/stage.ip \
             --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
-            2>/dev/null && cat /tmp/staging.ip || echo "0.0.0.0")
+            2>/dev/null && cat /tmp/stage.ip || echo "0.0.0.0")
 
           PROD_IP=$(az storage blob download \
             --account-name tfstatedevops \
@@ -600,11 +600,11 @@ jobs:
             2>/dev/null && cat /tmp/prod.ip || echo "0.0.0.0")
 
           echo "dev_vm_ip=$DEV_IP" >> $GITHUB_OUTPUT
-          echo "staging_vm_ip=$STAGING_IP" >> $GITHUB_OUTPUT
+          echo "stage_vm_ip=$stage_IP" >> $GITHUB_OUTPUT
           echo "prod_vm_ip=$PROD_IP" >> $GITHUB_OUTPUT
 
           echo "✅ Dev IP: $DEV_IP"
-          echo "✅ Staging IP: $STAGING_IP"
+          echo "✅ stage IP: $stage_IP"
           echo "✅ Prod IP: $PROD_IP"
 
       - name: Setup Terraform
@@ -620,7 +620,7 @@ jobs:
         env:
           TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
           TF_VAR_dev_vm_ip: ${{ steps.read_ips.outputs.dev_vm_ip }}
-          TF_VAR_staging_vm_ip: ${{ steps.read_ips.outputs.staging_vm_ip }}
+          TF_VAR_stage_vm_ip: ${{ steps.read_ips.outputs.stage_vm_ip }}
           TF_VAR_prod_vm_ip: ${{ steps.read_ips.outputs.prod_vm_ip }}
 
       - name: Terraform Apply
@@ -628,7 +628,7 @@ jobs:
         env:
           TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
           TF_VAR_dev_vm_ip: ${{ steps.read_ips.outputs.dev_vm_ip }}
-          TF_VAR_staging_vm_ip: ${{ steps.read_ips.outputs.staging_vm_ip }}
+          TF_VAR_stage_vm_ip: ${{ steps.read_ips.outputs.stage_vm_ip }}
           TF_VAR_prod_vm_ip: ${{ steps.read_ips.outputs.prod_vm_ip }}
 
       - name: Get Monitoring VM IP
@@ -684,12 +684,12 @@ jobs:
                       env: 'dev'
                       vm: 'dev-vm'
 
-              - job_name: 'node-staging'
+              - job_name: 'node-stage'
                 static_configs:
-                  - targets: ['${STAGING_VM_IP}:9100']
+                  - targets: ['${stage_VM_IP}:9100']
                     labels:
-                      env: 'staging'
-                      vm: 'staging-vm'
+                      env: 'stage'
+                      vm: 'stage-vm'
 
               - job_name: 'node-prod'
                 static_configs:
@@ -740,6 +740,6 @@ jobs:
             sudo docker ps
         env:
           DEV_VM_IP: ${{ needs.terraform-monitoring.outputs.dev_vm_ip }}
-          STAGING_VM_IP: ${{ needs.terraform-monitoring.outputs.staging_vm_ip }}
+          stage_VM_IP: ${{ needs.terraform-monitoring.outputs.stage_vm_ip }}
           PROD_VM_IP: ${{ needs.terraform-monitoring.outputs.prod_vm_ip }}
           
