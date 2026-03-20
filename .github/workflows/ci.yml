@@ -4,11 +4,14 @@ on:
   pull_request:
     branches: [ "dev", "stage", "main" ]
 
+  push:
+    branches: [ "dev", "stage", "main" ]
+
 env:
   IMAGE_NAME: adetunjiadeshina/devops-app
 
 jobs:
-  # ── Build & Test ─────────────────────────────────────────────
+  # ── Build & Test (Runs on PR + Push) ─────────────────────────
   build-and-test:
     runs-on: ubuntu-latest
     steps:
@@ -32,8 +35,9 @@ jobs:
           pip install safety
           safety check -r app/requirements.txt
 
-  # ── Docker Build & Push ─────────────────────────────────────
+  # ── Docker Build & Push (ONLY on push) ───────────────────────
   docker-build-push:
+    if: github.event_name == 'push'
     needs: build-and-test
     runs-on: ubuntu-latest
 
@@ -64,12 +68,13 @@ jobs:
           docker push ${{ env.IMAGE_NAME }}:${{ github.sha }}
           docker push ${{ env.IMAGE_NAME }}:${{ steps.set_tag.outputs.tag }}
 
-  # ── Deploy (Dynamic) ─────────────────────────────────────────
+  # ── Deploy (Dynamic per Environment) ─────────────────────────
   deploy:
+    if: github.event_name == 'push'
     needs: docker-build-push
     runs-on: ubuntu-latest
 
-   
+    # 🔥 Dynamically maps branch → environment
     environment: ${{ github.ref_name }}
 
     steps:
