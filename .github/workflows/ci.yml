@@ -92,7 +92,7 @@ jobs:
     if: github.ref == 'refs/heads/dev' && github.event_name == 'push'
     defaults:
       run:
-        working-directory: terraform/dev
+        working-directory: infra/dev
     outputs:
       vm_ip: ${{ steps.tf_output.outputs.vm_ip }}
     steps:
@@ -208,7 +208,7 @@ jobs:
     if: github.ref == 'refs/heads/staging' && github.event_name == 'push'
     defaults:
       run:
-        working-directory: terraform/staging
+        working-directory: infra/stage
     outputs:
       vm_ip: ${{ steps.tf_output.outputs.vm_ip }}
     steps:
@@ -324,7 +324,7 @@ jobs:
       name: production
     defaults:
       run:
-        working-directory: terraform/prod
+        working-directory: infra/prod
     outputs:
       vm_ip: ${{ steps.tf_output.outputs.vm_ip }}
     steps:
