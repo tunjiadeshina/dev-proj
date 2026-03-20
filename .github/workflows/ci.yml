@@ -54,13 +54,30 @@ jobs:
       - name: Set image tag based on branch
         id: tag
         run: |
-          if [[ "${{ github.ref }}" == "refs/heads/dev" ]]; then
-            echo "TAG=dev" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.ref }}" == "refs/heads/stage" ]]; then
-            echo "TAG=stage" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            echo "TAG=prod" >> $GITHUB_OUTPUT
+          # Use base_ref for PRs, ref for direct pushes
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            BRANCH="${{ github.base_ref }}"
+          else
+            BRANCH="${{ github.ref_name }}"
           fi
+
+          if [[ "$BRANCH" == "dev" ]]; then
+            echo "TAG=dev" >> $GITHUB_OUTPUT
+          elif [[ "$BRANCH" == "stage" ]]; then
+            echo "TAG=stage" >> $GITHUB_OUTPUT
+          elif [[ "$BRANCH" == "main" ]]; then
+            echo "TAG=prod" >> $GITHUB_OUTPUT
+          else
+            echo "TAG=dev" >> $GITHUB_OUTPUT  # fallback
+          fi
+
+      - name: Validate tag
+        run: |
+          if [ -z "${{ steps.tag.outputs.TAG }}" ]; then
+            echo "ERROR: TAG is empty, cannot build image"
+            exit 1
+          fi
+          echo "Building with tag: ${{ steps.tag.outputs.TAG }}"  
 
       - name: Build and push Docker image
         run: |
