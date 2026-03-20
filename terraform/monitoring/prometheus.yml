@@ -1,0 +1,29 @@
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # ── Dev VM ──────────────────────────────────────────────────
+  - job_name: 'node-dev'
+    static_configs:
+      - targets: ['DEV_VM_IP:9100']
+        labels:
+          env: 'dev'
+          vm: 'dev-vm'
+
+  # ── Staging VM ──────────────────────────────────────────────
+  - job_name: 'node-staging'
+    static_configs:
+      - targets: ['STAGING_VM_IP:9100']
+        labels:
+          env: 'staging'
+          vm: 'staging-vm'
+
+  # ── Prod VM ─────────────────────────────────────────────────
+  - job_name: 'node-prod'
+    static_configs:
+      - targets: ['PROD_VM_IP:9100']
+        labels:
+          env: 'prod'
+          vm: 'prod-vm'
