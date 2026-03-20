@@ -103,47 +103,14 @@ jobs:
           key: ${{ secrets.VM_SSH_KEY }}
           script: |
             IMAGE="adetunjiadeshina/devops-app:dev"
-            echo "📦 Pulling new image..."
             docker pull $IMAGE
-
-            echo "💾 Saving current running image (if exists)..."
-            PREVIOUS_IMAGE=$(docker inspect --format='{{.Config.Image}}' devops-app 2>/dev/null || echo "")
-            
-            echo "🛑 Stopping existing container..."
             docker stop devops-app || true
             docker rm devops-app || true
-
-            echo "🚀 Starting new container..."
             docker run -d \
               -p 80:8000 \
               --name devops-app \
               --restart unless-stopped \
               $IMAGE
-
-            echo "⏳ Waiting for application to start..."
-            sleep 10
-
-            echo "🩺 Running health check..."
-            if curl -f http://localhost/health; then
-              echo "✅ Deployment successful!"
-            else
-              echo "❌ Deployment failed! Initiating rollback..."
-              docker stop devops-app || true
-              docker rm devops-app || true
-              if [ ! -z "$PREVIOUS_IMAGE" ]; then
-                echo "🔙 Rolling back to previous image: $PREVIOUS_IMAGE"
-                docker run -d \
-                  -p 80:8000 \
-                  --name devops-app \
-                  --restart unless-stopped \
-                  $PREVIOUS_IMAGE
-                echo "✅ Rollback successful!"
-              else
-                echo "⚠️ No previous image found, manual intervention required!"
-              fi
-              exit 1
-            fi
-            echo "📊 Verifying running container..."
             docker ps | grep devops-app
 
   # ── Deploy to Stage (Manual approval, from stage branch) ──────
