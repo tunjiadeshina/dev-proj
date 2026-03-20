@@ -134,7 +134,7 @@ jobs:
             --name vm-ips/dev.ip \
             --file /tmp/dev.ip \
             --overwrite \
-            --auth-mode login
+            --account-key ${{ secrets.AZURE_STORAGE_KEY }}
 
   # ── 4. Deploy to Dev ──────────────────────────────────────────
   deploy-dev:
@@ -576,28 +576,29 @@ jobs:
       - name: Read all VM IPs from blob storage
         id: read_ips
         run: |
-          az storage blob download \
+          DEV_IP=$(az storage blob download \
             --account-name tfstatedevops \
             --container-name tfstate \
             --name vm-ips/dev.ip \
             --file /tmp/dev.ip \
-            --auth-mode login
-          az storage blob download \
+            --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
+            2>/dev/null && cat /tmp/dev.ip || echo "0.0.0.0")
+
+          STAGING_IP=$(az storage blob download \
             --account-name tfstatedevops \
             --container-name tfstate \
             --name vm-ips/staging.ip \
             --file /tmp/staging.ip \
-            --auth-mode login
-          az storage blob download \
+            --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
+            2>/dev/null && cat /tmp/staging.ip || echo "0.0.0.0")
+
+          PROD_IP=$(az storage blob download \
             --account-name tfstatedevops \
             --container-name tfstate \
             --name vm-ips/prod.ip \
             --file /tmp/prod.ip \
-            --auth-mode login
-
-          DEV_IP=$(cat /tmp/dev.ip)
-          STAGING_IP=$(cat /tmp/staging.ip)
-          PROD_IP=$(cat /tmp/prod.ip)
+            --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
+            2>/dev/null && cat /tmp/prod.ip || echo "0.0.0.0")
 
           echo "dev_vm_ip=$DEV_IP" >> $GITHUB_OUTPUT
           echo "staging_vm_ip=$STAGING_IP" >> $GITHUB_OUTPUT
