@@ -2,11 +2,15 @@ name: DevOps CI/CD Pipeline
 
 on:
   pull_request:
-    branches: [ "dev", "stage", "main" ]
+    branches: 
+      - stage
+      - main
   push:
-    branches: [ "dev", "stage", "main" ]
+    branches:
+      - dev
     tags:
       - 'v*.*.*'  # Optional for production releases
+
 
 env:
   IMAGE_NAME: adetunjiadeshina/devops-app
