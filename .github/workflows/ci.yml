@@ -1,72 +1,91 @@
-name: CI/CD Pipeline
+name: DevOps CI/CD Pipeline
 
 on:
   pull_request:
-    branches: [ "main" ]
+    branches: [ "dev", "stage", "main" ]
+
+env:
+  IMAGE_NAME: adetunjiadeshina/devops-app
 
 jobs:
+  # ── Build & Test ─────────────────────────────────────────────
   build-and-test:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: 3.11
 
-      - name: Install dependencies
+      - run: pip install -r app/requirements.txt
+
+      - run: PYTHONPATH=. pytest
+
+      - name: Run Bandit (SAST)
         run: |
-          pip install -r app/requirements.txt
+          pip install bandit
+          bandit -r app/
 
-      - name: Run tests
+      - name: Dependency Check
         run: |
-          PYTHONPATH=. pytest
+          pip install safety
+          safety check -r app/requirements.txt
 
-      - name: Log in to Docker Hub
-        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
-
-      - name: Build Docker image
-        run: |
-          docker build -t adetunjiadeshina/devops-app:${{ github.sha }} .
-          docker tag adetunjiadeshina/devops-app:${{ github.sha }} adetunjiadeshina/devops-app:latest
-
-      - name: Push Docker image
-        run: |
-          docker push adetunjiadeshina/devops-app:${{ github.sha }}
-          docker push adetunjiadeshina/devops-app:latest
-
-  deploy:
+  # ── Docker Build & Push ─────────────────────────────────────
+  docker-build-push:
     needs: build-and-test
     runs-on: ubuntu-latest
 
+    outputs:
+      image_tag: ${{ steps.set_tag.outputs.tag }}
+
     steps:
-      - name: Deploy to VM via SSH
+      - uses: actions/checkout@v4
+
+      - name: Set Environment Tag
+        id: set_tag
+        run: |
+          echo "tag=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Login to Docker Hub
+        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+      - name: Build Image
+        run: |
+          docker build -t ${{ env.IMAGE_NAME }}:${{ github.sha }} .
+
+      - name: Tag Image
+        run: |
+          docker tag ${{ env.IMAGE_NAME }}:${{ github.sha }} ${{ env.IMAGE_NAME }}:${{ steps.set_tag.outputs.tag }}
+
+      - name: Push Image
+        run: |
+          docker push ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          docker push ${{ env.IMAGE_NAME }}:${{ steps.set_tag.outputs.tag }}
+
+  # ── Deploy (Dynamic) ─────────────────────────────────────────
+  deploy:
+    needs: docker-build-push
+    runs-on: ubuntu-latest
+
+   
+    environment: ${{ github.ref_name }}
+
+    steps:
+      - name: Deploy to Environment
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
-          command_timeout: 10m
           script: |
-            # Ensure Docker is running
-            sudo systemctl enable docker
-            sudo systemctl start docker
-
-            # Clean old container
-            sudo docker rm -f devops-app || true
-
-            # Pull latest image
-            sudo docker pull adetunjiadeshina/devops-app:latest
-
-            # Run new container
-            sudo docker run -d \
-              -p 80:8000 \
+            docker pull ${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+            docker stop devops-app || true
+            docker rm devops-app || true
+            docker run -d -p 80:8000 \
               --name devops-app \
-              --restart always \
-              adetunjiadeshina/devops-app:latest
+              --restart unless-stopped \
+              ${{ env.IMAGE_NAME }}:${{ github.ref_name }}
 
-            # Verify
-            sudo docker ps | grep devops-app
+            docker ps | grep devops-app
