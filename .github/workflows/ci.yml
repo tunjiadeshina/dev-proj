@@ -3,9 +3,13 @@ name: DevOps CI/CD Pipeline
 on:
   push:
     branches:
-      - dev        
-      - stage      
-      - main       
+      - dev        # triggers auto deploy to dev
+      - stage      # triggers deploy to stage
+      - main       # triggers deploy to prod
+  pull_request:
+    branches:
+      - stage      # runs build/test checks only when PR targets stage
+      - main       # runs build/test checks only when PR targets main  
 
 env:
   IMAGE_NAME: adetunjiadeshina/devops-app
@@ -50,13 +54,30 @@ jobs:
       - name: Set image tag based on branch
         id: tag
         run: |
-          if [[ "${{ github.ref }}" == "refs/heads/dev" ]]; then
-            echo "TAG=dev" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.ref }}" == "refs/heads/stage" ]]; then
-            echo "TAG=stage" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            echo "TAG=prod" >> $GITHUB_OUTPUT
+          # Use base_ref for PRs, ref for direct pushes
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            BRANCH="${{ github.base_ref }}"
+          else
+            BRANCH="${{ github.ref_name }}"
           fi
+
+          if [[ "$BRANCH" == "dev" ]]; then
+            echo "TAG=dev" >> $GITHUB_OUTPUT
+          elif [[ "$BRANCH" == "stage" ]]; then
+            echo "TAG=stage" >> $GITHUB_OUTPUT
+          elif [[ "$BRANCH" == "main" ]]; then
+            echo "TAG=prod" >> $GITHUB_OUTPUT
+          else
+            echo "TAG=dev" >> $GITHUB_OUTPUT  # fallback
+          fi
+
+      - name: Validate tag
+        run: |
+          if [ -z "${{ steps.tag.outputs.TAG }}" ]; then
+            echo "ERROR: TAG is empty, cannot build image"
+            exit 1
+          fi
+          echo "Building with tag: ${{ steps.tag.outputs.TAG }}"  
 
       - name: Build and push Docker image
         run: |
@@ -69,7 +90,7 @@ jobs:
   # ── Deploy to Dev (Automatic on push to dev) ──────────────────
   deploy-dev:
     needs: docker-build-push
-    if: github.ref == 'refs/heads/dev'
+    if: github.ref == 'refs/heads/dev' && github.event_name == 'push'
     runs-on: ubuntu-latest
     environment:
       name: dev
@@ -95,7 +116,7 @@ jobs:
   # ── Deploy to Stage (Manual approval, from stage branch) ──────
   deploy-stage:
     needs: docker-build-push
-    if: github.ref == 'refs/heads/stage'
+    if: github.ref == 'refs/heads/stage' && github.event_name == 'push'
     runs-on: ubuntu-latest
     environment:
       name: stage       # GitHub will pause here and wait for approval
@@ -121,7 +142,7 @@ jobs:
   # ── Deploy to Prod (Manual approval, from main branch) ────────
   deploy-prod:
     needs: docker-build-push
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     environment:
       name: main        # 👈 matches your GitHub environment name
