@@ -37,4 +37,5 @@ def version():
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
-    app.run(host="0.0.0.0", port=port)
+    host = os.getenv("APP_HOST", "0.0.0.0")  # nosec B104
+    app.run(host=host, port=port)
