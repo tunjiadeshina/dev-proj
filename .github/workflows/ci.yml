@@ -1,72 +1,136 @@
-name: CI/CD Pipeline
+name: DevOps CI/CD Pipeline
 
 on:
   pull_request:
-    branches: [ "main" ]
+    branches: [ "dev", "stage", "main" ]
+  push:
+    branches: [ "dev", "stage", "main" ]
+    tags:
+      - 'v*.*.*'  # Optional for production releases
+
+env:
+  IMAGE_NAME: adetunjiadeshina/devops-app
 
 jobs:
+  # ── Build & Test ──────────────────────────────────────────────
   build-and-test:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: 3.11
 
-      - name: Install dependencies
+      - run: pip install -r app/requirements.txt
+
+      - run: PYTHONPATH=. pytest
+
+      - name: Run Bandit (SAST)
         run: |
-          pip install -r app/requirements.txt
+          pip install bandit
+          bandit -r app/ -ll
 
-      - name: Run tests
+      - name: Dependency Check
         run: |
-          PYTHONPATH=. pytest
+          pip install safety
+          safety check -r app/requirements.txt
 
-      - name: Log in to Docker Hub
-        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
-
-      - name: Build Docker image
-        run: |
-          docker build -t adetunjiadeshina/devops-app:${{ github.sha }} .
-          docker tag adetunjiadeshina/devops-app:${{ github.sha }} adetunjiadeshina/devops-app:latest
-
-      - name: Push Docker image
-        run: |
-          docker push adetunjiadeshina/devops-app:${{ github.sha }}
-          docker push adetunjiadeshina/devops-app:latest
-
-  deploy:
+  # ── Docker Build & Push ───────────────────────────────────────
+  docker-build-push:
     needs: build-and-test
     runs-on: ubuntu-latest
-
     steps:
-      - name: Deploy to VM via SSH
+      - uses: actions/checkout@v4
+
+      - name: Login to Docker Hub
+        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+      - name: Build Docker Image
+        run: |
+          docker build -t ${{ env.IMAGE_NAME }}:${{ github.sha }} .
+          docker tag ${{ env.IMAGE_NAME }}:${{ github.sha }} ${{ env.IMAGE_NAME }}:dev
+          docker tag ${{ env.IMAGE_NAME }}:${{ github.sha }} ${{ env.IMAGE_NAME }}:stage
+          docker tag ${{ env.IMAGE_NAME }}:${{ github.sha }} ${{ env.IMAGE_NAME }}:prod
+          docker tag ${{ env.IMAGE_NAME }}:${{ github.sha }} ${{ env.IMAGE_NAME }}:latest
+
+      - name: Push Docker Images
+        run: |
+          docker push ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          docker push ${{ env.IMAGE_NAME }}:dev
+          docker push ${{ env.IMAGE_NAME }}:stage
+          docker push ${{ env.IMAGE_NAME }}:prod
+          docker push ${{ env.IMAGE_NAME }}:latest
+
+  # ── Deploy to Dev (Auto) ──────────────────────────────────────
+  deploy-dev:
+    needs: docker-build-push
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to Dev
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
-          command_timeout: 10m
           script: |
-            # Ensure Docker is running
-            sudo systemctl enable docker
-            sudo systemctl start docker
+            docker pull ${{ env.IMAGE_NAME }}:dev
+            docker stop devops-app || true
+            docker rm devops-app || true
+            docker run -d -p 80:8000 --name devops-app --restart unless-stopped ${{ env.IMAGE_NAME }}:dev
+            docker ps | grep devops-app
 
-            # Clean old container
-            sudo docker rm -f devops-app || true
+  # ── Deploy to Stage (Manual Approval) ─────────────────────────
+  deploy-stage:
+    needs: docker-build-push
+    if: github.ref == 'refs/heads/stage'
+    runs-on: ubuntu-latest
+    environment:
+      name: stage
+      url: http://your-stage-url # Optional
+    steps:
+      - name: Wait for Manual Approval
+        uses: hmarr/auto-approve-action@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
-            # Pull latest image
-            sudo docker pull adetunjiadeshina/devops-app:latest
+      - name: Deploy to Stage
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          script: |
+            docker pull ${{ env.IMAGE_NAME }}:stage
+            docker stop devops-app || true
+            docker rm devops-app || true
+            docker run -d -p 80:8000 --name devops-app --restart unless-stopped ${{ env.IMAGE_NAME }}:stage
+            docker ps | grep devops-app
 
-            # Run new container
-            sudo docker run -d \
-              -p 80:8000 \
-              --name devops-app \
-              --restart always \
-              adetunjiadeshina/devops-app:latest
+  # ── Deploy to Prod (Manual Approval) ──────────────────────────
+  deploy-prod:
+    needs: docker-build-push
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: prod
+      url: http://your-prod-url # Optional
+    steps:
+      - name: Wait for Manual Approval
+        uses: hmarr/auto-approve-action@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
-            # Verify
-            sudo docker ps | grep devops-app
+      - name: Deploy to Prod
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          script: |
+            docker pull ${{ env.IMAGE_NAME }}:prod
+            docker stop devops-app || true
+            docker rm devops-app || true
+            docker run -d -p 80:8000 --name devops-app --restart unless-stopped ${{ env.IMAGE_NAME }}:prod
+            docker ps | grep devops-app
