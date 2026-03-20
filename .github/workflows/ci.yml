@@ -3,15 +3,16 @@ name: DevOps CI/CD Pipeline
 on:
   pull_request:
     branches: [ "dev", "stage", "main" ]
-
   push:
     branches: [ "dev", "stage", "main" ]
+    tags:
+      - 'v*.*.*'  # Optional for production releases
 
 env:
   IMAGE_NAME: adetunjiadeshina/devops-app
 
 jobs:
-  # ── Build & Test (Runs on PR + Push) ─────────────────────────
+  # ── Build & Test ──────────────────────────────────────────────
   build-and-test:
     runs-on: ubuntu-latest
     steps:
@@ -35,62 +36,101 @@ jobs:
           pip install safety
           safety check -r app/requirements.txt
 
-  # ── Docker Build & Push (ONLY on push) ───────────────────────
+  # ── Docker Build & Push ───────────────────────────────────────
   docker-build-push:
-    if: github.event_name == 'push'
     needs: build-and-test
     runs-on: ubuntu-latest
-
-    outputs:
-      image_tag: ${{ steps.set_tag.outputs.tag }}
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set Environment Tag
-        id: set_tag
-        run: |
-          echo "tag=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
 
       - name: Login to Docker Hub
         run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
-      - name: Build Image
+      - name: Build Docker Image
         run: |
           docker build -t ${{ env.IMAGE_NAME }}:${{ github.sha }} .
+          docker tag ${{ env.IMAGE_NAME }}:${{ github.sha }} ${{ env.IMAGE_NAME }}:dev
+          docker tag ${{ env.IMAGE_NAME }}:${{ github.sha }} ${{ env.IMAGE_NAME }}:stage
+          docker tag ${{ env.IMAGE_NAME }}:${{ github.sha }} ${{ env.IMAGE_NAME }}:prod
+          docker tag ${{ env.IMAGE_NAME }}:${{ github.sha }} ${{ env.IMAGE_NAME }}:latest
 
-      - name: Tag Image
-        run: |
-          docker tag ${{ env.IMAGE_NAME }}:${{ github.sha }} ${{ env.IMAGE_NAME }}:${{ steps.set_tag.outputs.tag }}
-
-      - name: Push Image
+      - name: Push Docker Images
         run: |
           docker push ${{ env.IMAGE_NAME }}:${{ github.sha }}
-          docker push ${{ env.IMAGE_NAME }}:${{ steps.set_tag.outputs.tag }}
+          docker push ${{ env.IMAGE_NAME }}:dev
+          docker push ${{ env.IMAGE_NAME }}:stage
+          docker push ${{ env.IMAGE_NAME }}:prod
+          docker push ${{ env.IMAGE_NAME }}:latest
 
-  # ── Deploy (Dynamic per Environment) ─────────────────────────
-  deploy:
-    if: github.event_name == 'push'
+  # ── Deploy to Dev (Auto) ──────────────────────────────────────
+  deploy-dev:
     needs: docker-build-push
+    if: github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
-
-    # 🔥 Dynamically maps branch → environment
-    environment: ${{ github.ref_name }}
-
     steps:
-      - name: Deploy to Environment
+      - name: Deploy to Dev
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           script: |
-            docker pull ${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+            docker pull ${{ env.IMAGE_NAME }}:dev
             docker stop devops-app || true
             docker rm devops-app || true
-            docker run -d -p 80:8000 \
-              --name devops-app \
-              --restart unless-stopped \
-              ${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+            docker run -d -p 80:8000 --name devops-app --restart unless-stopped ${{ env.IMAGE_NAME }}:dev
+            docker ps | grep devops-app
 
+  # ── Deploy to Stage (Manual Approval) ─────────────────────────
+  deploy-stage:
+    needs: docker-build-push
+    if: github.ref == 'refs/heads/stage'
+    runs-on: ubuntu-latest
+    environment:
+      name: stage
+      url: http://your-stage-url # Optional
+    steps:
+      - name: Wait for Manual Approval
+        uses: hmarr/auto-approve-action@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deploy to Stage
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          script: |
+            docker pull ${{ env.IMAGE_NAME }}:stage
+            docker stop devops-app || true
+            docker rm devops-app || true
+            docker run -d -p 80:8000 --name devops-app --restart unless-stopped ${{ env.IMAGE_NAME }}:stage
+            docker ps | grep devops-app
+
+  # ── Deploy to Prod (Manual Approval) ──────────────────────────
+  deploy-prod:
+    needs: docker-build-push
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: prod
+      url: http://your-prod-url # Optional
+    steps:
+      - name: Wait for Manual Approval
+        uses: hmarr/auto-approve-action@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deploy to Prod
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          script: |
+            docker pull ${{ env.IMAGE_NAME }}:prod
+            docker stop devops-app || true
+            docker rm devops-app || true
+            docker run -d -p 80:8000 --name devops-app --restart unless-stopped ${{ env.IMAGE_NAME }}:prod
             docker ps | grep devops-app
