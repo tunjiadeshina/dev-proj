@@ -25,7 +25,7 @@ jobs:
       - name: Run Bandit (SAST)
         run: |
           pip install bandit
-          bandit -r app/
+          bandit -r app/ -ll
 
       - name: Dependency Check
         run: |
