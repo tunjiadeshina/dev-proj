@@ -742,3 +742,4 @@ jobs:
           DEV_VM_IP: ${{ needs.terraform-monitoring.outputs.dev_vm_ip }}
           STAGING_VM_IP: ${{ needs.terraform-monitoring.outputs.staging_vm_ip }}
           PROD_VM_IP: ${{ needs.terraform-monitoring.outputs.prod_vm_ip }}
+          
