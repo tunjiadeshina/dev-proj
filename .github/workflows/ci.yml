@@ -1,21 +1,20 @@
-name: DevOps CI/CD Pipeline
+name: CI/CD Pipeline
 
 on:
   push:
-    branches:
-      - dev        # triggers auto deploy to dev
-      - stage      # triggers deploy to stage
-      - main       # triggers deploy to prod
+    branches: [ "dev", "staging", "main" ]
   pull_request:
-    branches:
-      - stage      # runs build/test checks only when PR targets stage
-      - main       # runs build/test checks only when PR targets main  
+    branches: [ "dev", "staging", "main" ]
 
 env:
+  ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+  ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+  ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
   IMAGE_NAME: adetunjiadeshina/devops-app
 
 jobs:
-  # ── Build & Test ──────────────────────────────────────────────
+  # ── 1. Build & Test ───────────────────────────────────────────
   build-and-test:
     runs-on: ubuntu-latest
     steps:
@@ -41,7 +40,7 @@ jobs:
           pip install safety
           safety check -r app/requirements.txt
 
-  # ── Docker Build & Push ───────────────────────────────────────
+  # ── 2. Docker Build & Push ────────────────────────────────────
   docker-build-push:
     needs: build-and-test
     runs-on: ubuntu-latest
@@ -54,7 +53,6 @@ jobs:
       - name: Set image tag based on branch
         id: tag
         run: |
-          # Use base_ref for PRs, ref for direct pushes
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             BRANCH="${{ github.base_ref }}"
           else
@@ -63,12 +61,12 @@ jobs:
 
           if [[ "$BRANCH" == "dev" ]]; then
             echo "TAG=dev" >> $GITHUB_OUTPUT
-          elif [[ "$BRANCH" == "stage" ]]; then
+          elif [[ "$BRANCH" == "staging" ]]; then
             echo "TAG=stage" >> $GITHUB_OUTPUT
           elif [[ "$BRANCH" == "main" ]]; then
             echo "TAG=prod" >> $GITHUB_OUTPUT
           else
-            echo "TAG=dev" >> $GITHUB_OUTPUT  # fallback
+            echo "TAG=dev" >> $GITHUB_OUTPUT
           fi
 
       - name: Validate tag
@@ -77,7 +75,7 @@ jobs:
             echo "ERROR: TAG is empty, cannot build image"
             exit 1
           fi
-          echo "Building with tag: ${{ steps.tag.outputs.TAG }}"  
+          echo "Building with tag: ${{ steps.tag.outputs.TAG }}"
 
       - name: Build and push Docker image
         run: |
@@ -87,37 +85,88 @@ jobs:
           docker push ${{ env.IMAGE_NAME }}:${{ github.sha }}
           docker push ${{ env.IMAGE_NAME }}:$TAG
 
-  # ── Deploy to Dev (Automatic on push to dev) ──────────────────
-  deploy-dev:
+  # ── 3. Terraform - Dev ────────────────────────────────────────
+  terraform-dev:
     needs: docker-build-push
-    if: github.ref == 'refs/heads/dev' && github.event_name == 'push'
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/dev' && github.event_name == 'push'
+    defaults:
+      run:
+        working-directory: terraform/dev
+    outputs:
+      vm_ip: ${{ steps.tf_output.outputs.vm_ip }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+
+      - name: Get VM IP
+        id: tf_output
+        run: echo "vm_ip=$(terraform output -raw vm_public_ip)" >> $GITHUB_OUTPUT
+
+  # ── 4. Deploy to Dev ─────────────────────────────────────────
+  deploy-dev:
+    needs: terraform-dev
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/dev' && github.event_name == 'push'
     environment:
       name: dev
     steps:
       - name: Deploy to Dev VM
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.VM_HOST }}
+          host: ${{ needs.terraform-dev.outputs.vm_ip }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 10m
           script: |
+            # Bootstrap Docker if needed
+            if ! command -v docker &> /dev/null; then
+              sudo apt-get update -y
+              sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+              sudo apt-get install -y ca-certificates curl gnupg
+              sudo install -m 0755 -d /etc/apt/keyrings
+              curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+                sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+              echo \
+                "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+                https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
+                sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+              sudo apt-get update -y
+              sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+            fi
+            sudo systemctl enable docker
+            sudo systemctl start docker
+
             IMAGE="adetunjiadeshina/devops-app:dev"
             VERSION="${GITHUB_REF_NAME}-$(echo $GITHUB_SHA | cut -c1-7)"
             COMMIT="${GITHUB_SHA}"
             ENVIRONMENT="dev"
+
             echo "📦 Pulling new image..."
-            docker pull $IMAGE
+            sudo docker pull $IMAGE
 
             echo "💾 Saving current running image (if exists)..."
-            PREVIOUS_IMAGE=$(docker inspect --format='{{.Config.Image}}' devops-app 2>/dev/null || echo "")
-            
+            PREVIOUS_IMAGE=$(sudo docker inspect --format='{{.Config.Image}}' devops-app 2>/dev/null || echo "")
+
             echo "🛑 Stopping existing container..."
-            docker stop devops-app || true
-            docker rm devops-app || true
+            sudo docker stop devops-app || true
+            sudo docker rm devops-app || true
 
             echo "🚀 Starting new container..."
-            docker run -d \
+            sudo docker run -d \
               -p 80:8000 \
               --name devops-app \
               --restart unless-stopped \
@@ -134,11 +183,11 @@ jobs:
               echo "✅ Deployment successful!"
             else
               echo "❌ Deployment failed! Initiating rollback..."
-              docker stop devops-app || true
-              docker rm devops-app || true
+              sudo docker stop devops-app || true
+              sudo docker rm devops-app || true
               if [ ! -z "$PREVIOUS_IMAGE" ]; then
                 echo "🔙 Rolling back to previous image: $PREVIOUS_IMAGE"
-                docker run -d \
+                sudo docker run -d \
                   -p 80:8000 \
                   --name devops-app \
                   --restart unless-stopped \
@@ -150,39 +199,89 @@ jobs:
               exit 1
             fi
             echo "📊 Verifying running container..."
-            docker ps | grep devops-app
+            sudo docker ps | grep devops-app
 
-  # ── Deploy to Stage (Manual approval, from stage branch) ──────
-  deploy-stage:
+  # ── 5. Terraform - Staging ────────────────────────────────────
+  terraform-staging:
     needs: docker-build-push
-    if: github.ref == 'refs/heads/stage' && github.event_name == 'push'
     runs-on: ubuntu-latest
-    environment:
-      name: stage       # GitHub will pause here and wait for approval
+    if: github.ref == 'refs/heads/staging' && github.event_name == 'push'
+    defaults:
+      run:
+        working-directory: terraform/staging
+    outputs:
+      vm_ip: ${{ steps.tf_output.outputs.vm_ip }}
     steps:
-      - name: Deploy to Stage VM
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+
+      - name: Get VM IP
+        id: tf_output
+        run: echo "vm_ip=$(terraform output -raw vm_public_ip)" >> $GITHUB_OUTPUT
+
+  # ── 6. Deploy to Staging ──────────────────────────────────────
+  deploy-staging:
+    needs: terraform-staging
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/staging' && github.event_name == 'push'
+    environment:
+      name: staging
+    steps:
+      - name: Deploy to Staging VM
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.VM_HOST }}
+          host: ${{ needs.terraform-staging.outputs.vm_ip }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 10m
           script: |
+            if ! command -v docker &> /dev/null; then
+              sudo apt-get update -y
+              sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+              sudo apt-get install -y ca-certificates curl gnupg
+              sudo install -m 0755 -d /etc/apt/keyrings
+              curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+                sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+              echo \
+                "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+                https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
+                sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+              sudo apt-get update -y
+              sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+            fi
+            sudo systemctl enable docker
+            sudo systemctl start docker
+
             IMAGE="adetunjiadeshina/devops-app:stage"
             VERSION="${GITHUB_REF_NAME}-$(echo $GITHUB_SHA | cut -c1-7)"
             COMMIT="${GITHUB_SHA}"
-            ENVIRONMENT="stage"
+            ENVIRONMENT="staging"
+
             echo "📦 Pulling new image..."
-            docker pull $IMAGE
+            sudo docker pull $IMAGE
 
             echo "💾 Saving current running image (if exists)..."
-            PREVIOUS_IMAGE=$(docker inspect --format='{{.Config.Image}}' devops-app 2>/dev/null || echo "")
-            
+            PREVIOUS_IMAGE=$(sudo docker inspect --format='{{.Config.Image}}' devops-app 2>/dev/null || echo "")
+
             echo "🛑 Stopping existing container..."
-            docker stop devops-app || true
-            docker rm devops-app || true
+            sudo docker stop devops-app || true
+            sudo docker rm devops-app || true
 
             echo "🚀 Starting new container..."
-            docker run -d \
+            sudo docker run -d \
               -p 80:8000 \
               --name devops-app \
               --restart unless-stopped \
@@ -199,11 +298,11 @@ jobs:
               echo "✅ Deployment successful!"
             else
               echo "❌ Deployment failed! Initiating rollback..."
-              docker stop devops-app || true
-              docker rm devops-app || true
+              sudo docker stop devops-app || true
+              sudo docker rm devops-app || true
               if [ ! -z "$PREVIOUS_IMAGE" ]; then
                 echo "🔙 Rolling back to previous image: $PREVIOUS_IMAGE"
-                docker run -d \
+                sudo docker run -d \
                   -p 80:8000 \
                   --name devops-app \
                   --restart unless-stopped \
@@ -214,40 +313,91 @@ jobs:
               fi
               exit 1
             fi
-            echo "📊 Verifying running container..."
-            docker ps | grep devops-app
+            sudo docker ps | grep devops-app
 
-  # ── Deploy to Prod (Manual approval, from main branch) ────────
-  deploy-prod:
+  # ── 7. Terraform - Prod ───────────────────────────────────────
+  terraform-prod:
     needs: docker-build-push
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     environment:
-      name: main       
+      name: production
+    defaults:
+      run:
+        working-directory: terraform/prod
+    outputs:
+      vm_ip: ${{ steps.tf_output.outputs.vm_ip }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+
+      - name: Get VM IP
+        id: tf_output
+        run: echo "vm_ip=$(terraform output -raw vm_public_ip)" >> $GITHUB_OUTPUT
+
+  # ── 8. Deploy to Prod ─────────────────────────────────────────
+  deploy-prod:
+    needs: terraform-prod
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment:
+      name: production
     steps:
       - name: Deploy to Prod VM
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.VM_HOST }}       
+          host: ${{ needs.terraform-prod.outputs.vm_ip }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 10m
           script: |
+            if ! command -v docker &> /dev/null; then
+              sudo apt-get update -y
+              sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+              sudo apt-get install -y ca-certificates curl gnupg
+              sudo install -m 0755 -d /etc/apt/keyrings
+              curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+                sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+              echo \
+                "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+                https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
+                sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+              sudo apt-get update -y
+              sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+            fi
+            sudo systemctl enable docker
+            sudo systemctl start docker
+
             IMAGE="adetunjiadeshina/devops-app:prod"
             VERSION="${GITHUB_REF_NAME}-$(echo $GITHUB_SHA | cut -c1-7)"
             COMMIT="${GITHUB_SHA}"
             ENVIRONMENT="prod"
+
             echo "📦 Pulling new image..."
-            docker pull $IMAGE
+            sudo docker pull $IMAGE
 
             echo "💾 Saving current running image (if exists)..."
-            PREVIOUS_IMAGE=$(docker inspect --format='{{.Config.Image}}' devops-app 2>/dev/null || echo "")
-            
+            PREVIOUS_IMAGE=$(sudo docker inspect --format='{{.Config.Image}}' devops-app 2>/dev/null || echo "")
+
             echo "🛑 Stopping existing container..."
-            docker stop devops-app || true
-            docker rm devops-app || true
+            sudo docker stop devops-app || true
+            sudo docker rm devops-app || true
 
             echo "🚀 Starting new container..."
-            docker run -d \
+            sudo docker run -d \
               -p 80:8000 \
               --name devops-app \
               --restart unless-stopped \
@@ -264,11 +414,11 @@ jobs:
               echo "✅ Deployment successful!"
             else
               echo "❌ Deployment failed! Initiating rollback..."
-              docker stop devops-app || true
-              docker rm devops-app || true
+              sudo docker stop devops-app || true
+              sudo docker rm devops-app || true
               if [ ! -z "$PREVIOUS_IMAGE" ]; then
                 echo "🔙 Rolling back to previous image: $PREVIOUS_IMAGE"
-                docker run -d \
+                sudo docker run -d \
                   -p 80:8000 \
                   --name devops-app \
                   --restart unless-stopped \
@@ -279,5 +429,4 @@ jobs:
               fi
               exit 1
             fi
-            echo "📊 Verifying running container..."
-            docker ps | grep devops-app
+            sudo docker ps | grep devops-app
