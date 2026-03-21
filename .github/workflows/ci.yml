@@ -651,7 +651,13 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           command_timeout: 15m
+          envs: DEV_VM_IP,STAGE_VM_IP,PROD_VM_IP
           script: |
+            # ── Verify IPs are coming through ────────────────────
+            echo "DEV_VM_IP=$DEV_VM_IP"
+            echo "STAGE_VM_IP=$STAGE_VM_IP"
+            echo "PROD_VM_IP=$PROD_VM_IP"
+
             # ── Bootstrap Docker ─────────────────────────────────
             if ! command -v docker &> /dev/null; then
               sudo apt-get update -y
@@ -672,7 +678,7 @@ jobs:
 
             # ── Write Prometheus config ───────────────────────────
             sudo mkdir -p /etc/prometheus
-            sudo tee /etc/prometheus/prometheus.yml > /dev/null <<EOF
+            sudo tee /etc/prometheus/prometheus.yml > /dev/null << PROMEOF
             global:
               scrape_interval: 15s
               evaluation_interval: 15s
@@ -698,11 +704,15 @@ jobs:
                     labels:
                       env: 'prod'
                       vm: 'prod-vm'
-            EOF
+            PROMEOF
+
+            # ── Verify IPs were written correctly ─────────────────
+            echo "✅ Prometheus config:"
+            cat /etc/prometheus/prometheus.yml
 
             # ── Write Grafana datasource provisioning ─────────────
             sudo mkdir -p /etc/grafana/provisioning/datasources
-            sudo tee /etc/grafana/provisioning/datasources/prometheus.yaml > /dev/null <<EOF
+            sudo tee /etc/grafana/provisioning/datasources/prometheus.yaml > /dev/null << GRAFEOF
             apiVersion: 1
             datasources:
               - name: Prometheus
@@ -712,7 +722,7 @@ jobs:
                 isDefault: true
                 jsonData:
                   timeInterval: "15s"
-            EOF
+            GRAFEOF
 
             # ── Deploy Prometheus ─────────────────────────────────
             sudo docker stop prometheus || true
