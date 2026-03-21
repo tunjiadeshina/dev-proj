@@ -129,7 +129,7 @@ jobs:
         run: |
           echo "${{ steps.tf_output.outputs.vm_ip }}" > /tmp/dev.ip
           az storage blob upload \
-            --account-name tfstatedevops \
+            --account-name belvadtfstate \
             --container-name tfstate \
             --name vm-ips/dev.ip \
             --file /tmp/dev.ip \
@@ -283,7 +283,7 @@ jobs:
         run: |
           echo "${{ steps.tf_output.outputs.vm_ip }}" > /tmp/stage.ip
           az storage blob upload \
-            --account-name tfstatedevops \
+            --account-name belvadtfstate \
             --container-name tfstate \
             --name vm-ips/stage.ip \
             --file /tmp/stage.ip \
@@ -440,7 +440,7 @@ jobs:
         run: |
           echo "${{ steps.tf_output.outputs.vm_ip }}" > /tmp/prod.ip
           az storage blob upload \
-            --account-name tfstatedevops \
+            --account-name belvadtfstate \
             --container-name tfstate \
             --name vm-ips/prod.ip \
             --file /tmp/prod.ip \
@@ -576,7 +576,7 @@ jobs:
         id: read_ips
         run: |
           DEV_IP=$(az storage blob download \
-            --account-name tfstatedevops \
+            --account-name belvadtfstate \
             --container-name tfstate \
             --name vm-ips/dev.ip \
             --file /tmp/dev.ip \
@@ -584,7 +584,7 @@ jobs:
             2>/dev/null && cat /tmp/dev.ip || echo "0.0.0.0")
 
           stage_IP=$(az storage blob download \
-            --account-name tfstatedevops \
+            --account-name belvadtfstate \
             --container-name tfstate \
             --name vm-ips/stage.ip \
             --file /tmp/stage.ip \
@@ -592,7 +592,7 @@ jobs:
             2>/dev/null && cat /tmp/stage.ip || echo "0.0.0.0")
 
           PROD_IP=$(az storage blob download \
-            --account-name tfstatedevops \
+            --account-name belvadtfstate \
             --container-name tfstate \
             --name vm-ips/prod.ip \
             --file /tmp/prod.ip \
