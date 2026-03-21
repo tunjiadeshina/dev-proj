@@ -600,11 +600,11 @@ jobs:
             2>/dev/null && cat /tmp/prod.ip || echo "0.0.0.0")
 
           echo "dev_vm_ip=$DEV_IP" >> $GITHUB_OUTPUT
-          echo "stage_vm_ip=$stage_IP" >> $GITHUB_OUTPUT
+          echo "stage_vm_ip=$STAGE_IP" >> $GITHUB_OUTPUT
           echo "prod_vm_ip=$PROD_IP" >> $GITHUB_OUTPUT
 
           echo "✅ Dev IP: $DEV_IP"
-          echo "✅ stage IP: $stage_IP"
+          echo "✅ stage IP: $STAGE_IP"
           echo "✅ Prod IP: $PROD_IP"
 
       - name: Setup Terraform
