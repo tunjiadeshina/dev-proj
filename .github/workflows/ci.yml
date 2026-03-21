@@ -129,7 +129,7 @@ jobs:
         run: |
           echo "${{ steps.tf_output.outputs.vm_ip }}" > /tmp/dev.ip
           az storage blob upload \
-            --account-name tfstatedevops \
+            --account-name belvadtfstate \
             --container-name tfstate \
             --name vm-ips/dev.ip \
             --file /tmp/dev.ip \
@@ -283,7 +283,7 @@ jobs:
         run: |
           echo "${{ steps.tf_output.outputs.vm_ip }}" > /tmp/stage.ip
           az storage blob upload \
-            --account-name tfstatedevops \
+            --account-name belvadtfstate \
             --container-name tfstate \
             --name vm-ips/stage.ip \
             --file /tmp/stage.ip \
@@ -440,7 +440,7 @@ jobs:
         run: |
           echo "${{ steps.tf_output.outputs.vm_ip }}" > /tmp/prod.ip
           az storage blob upload \
-            --account-name tfstatedevops \
+            --account-name belvadtfstate \
             --container-name tfstate \
             --name vm-ips/prod.ip \
             --file /tmp/prod.ip \
@@ -575,36 +575,37 @@ jobs:
       - name: Read all VM IPs from blob storage
         id: read_ips
         run: |
-          DEV_IP=$(az storage blob download \
-            --account-name tfstatedevops \
+          az storage blob download \
             --container-name tfstate \
             --name vm-ips/dev.ip \
             --file /tmp/dev.ip \
-            --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
-            2>/dev/null && cat /tmp/dev.ip || echo "0.0.0.0")
+            --connection-string "${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
+            > /dev/null 2>&1 || true
 
-          stage_IP=$(az storage blob download \
-            --account-name tfstatedevops \
+          az storage blob download \
             --container-name tfstate \
             --name vm-ips/stage.ip \
             --file /tmp/stage.ip \
-            --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
-            2>/dev/null && cat /tmp/stage.ip || echo "0.0.0.0")
+            --connection-string "${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
+            > /dev/null 2>&1 || true
 
-          PROD_IP=$(az storage blob download \
-            --account-name tfstatedevops \
+          az storage blob download \
             --container-name tfstate \
             --name vm-ips/prod.ip \
             --file /tmp/prod.ip \
-            --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
-            2>/dev/null && cat /tmp/prod.ip || echo "0.0.0.0")
+            --connection-string "${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
+            > /dev/null 2>&1 || true
 
+          DEV_IP=$(cat /tmp/dev.ip 2>/dev/null | tr -d '[:space:]' || echo "0.0.0.0")
+          STAGE_IP=$(cat /tmp/stage.ip 2>/dev/null | tr -d '[:space:]' || echo "0.0.0.0")
+          PROD_IP=$(cat /tmp/prod.ip 2>/dev/null | tr -d '[:space:]' || echo "0.0.0.0")
+  
           echo "dev_vm_ip=$DEV_IP" >> $GITHUB_OUTPUT
           echo "stage_vm_ip=$STAGE_IP" >> $GITHUB_OUTPUT
           echo "prod_vm_ip=$PROD_IP" >> $GITHUB_OUTPUT
 
           echo "✅ Dev IP: $DEV_IP"
-          echo "✅ stage IP: $STAGE_IP"
+          echo "✅ stage IP: $STAGE _IP"
           echo "✅ Prod IP: $PROD_IP"
 
       - name: Setup Terraform
@@ -650,7 +651,13 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           command_timeout: 15m
+          envs: DEV_VM_IP,STAGE_VM_IP,PROD_VM_IP
           script: |
+            # ── Verify IPs are coming through ────────────────────
+            echo "DEV_VM_IP=$DEV_VM_IP"
+            echo "STAGE_VM_IP=$STAGE_VM_IP"
+            echo "PROD_VM_IP=$PROD_VM_IP"
+
             # ── Bootstrap Docker ─────────────────────────────────
             if ! command -v docker &> /dev/null; then
               sudo apt-get update -y
@@ -671,7 +678,7 @@ jobs:
 
             # ── Write Prometheus config ───────────────────────────
             sudo mkdir -p /etc/prometheus
-            sudo tee /etc/prometheus/prometheus.yml > /dev/null <<EOF
+            sudo tee /etc/prometheus/prometheus.yml > /dev/null << PROMEOF
             global:
               scrape_interval: 15s
               evaluation_interval: 15s
@@ -697,11 +704,15 @@ jobs:
                     labels:
                       env: 'prod'
                       vm: 'prod-vm'
-            EOF
+            PROMEOF
+
+            # ── Verify IPs were written correctly ─────────────────
+            echo "✅ Prometheus config:"
+            cat /etc/prometheus/prometheus.yml
 
             # ── Write Grafana datasource provisioning ─────────────
             sudo mkdir -p /etc/grafana/provisioning/datasources
-            sudo tee /etc/grafana/provisioning/datasources/prometheus.yaml > /dev/null <<EOF
+            sudo tee /etc/grafana/provisioning/datasources/prometheus.yaml > /dev/null << GRAFEOF
             apiVersion: 1
             datasources:
               - name: Prometheus
@@ -711,7 +722,7 @@ jobs:
                 isDefault: true
                 jsonData:
                   timeInterval: "15s"
-            EOF
+            GRAFEOF
 
             # ── Deploy Prometheus ─────────────────────────────────
             sudo docker stop prometheus || true

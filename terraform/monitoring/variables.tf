@@ -15,14 +15,17 @@ variable "ssh_public_key" {
 variable "dev_vm_ip" {
   type        = string
   description = "Dev VM public IP for prometheus scraping"
+  default     = "0.0.0.0"
 }
 
-variable "staging_vm_ip" {
+variable "stage_vm_ip" {
   type        = string
-  description = "Staging VM public IP for prometheus scraping"
+  description = "Stage VM public IP for prometheus scraping"
+  default     = "0.0.0.0"
 }
 
 variable "prod_vm_ip" {
   type        = string
   description = "Prod VM public IP for prometheus scraping"
+  default     = "0.0.0.0"
 }
