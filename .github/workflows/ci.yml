@@ -575,36 +575,37 @@ jobs:
       - name: Read all VM IPs from blob storage
         id: read_ips
         run: |
-          DEV_IP=$(az storage blob download \
-            --account-name belvadtfstate \
+          az storage blob download \
             --container-name tfstate \
             --name vm-ips/dev.ip \
             --file /tmp/dev.ip \
-            --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
-            2>/dev/null && cat /tmp/dev.ip || echo "0.0.0.0")
+            --connection-string "${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
+            > /dev/null 2>&1 || true
 
-          stage_IP=$(az storage blob download \
-            --account-name belvadtfstate \
+          az storage blob download \
             --container-name tfstate \
             --name vm-ips/stage.ip \
             --file /tmp/stage.ip \
-            --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
-            2>/dev/null && cat /tmp/stage.ip || echo "0.0.0.0")
+            --connection-string "${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
+            > /dev/null 2>&1 || true
 
-          PROD_IP=$(az storage blob download \
-            --account-name belvadtfstate \
+          az storage blob download \
             --container-name tfstate \
             --name vm-ips/prod.ip \
             --file /tmp/prod.ip \
-            --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
-            2>/dev/null && cat /tmp/prod.ip || echo "0.0.0.0")
+            --connection-string "${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
+            > /dev/null 2>&1 || true
 
+          DEV_IP=$(cat /tmp/dev.ip 2>/dev/null | tr -d '[:space:]' || echo "0.0.0.0")
+          STAGE_IP=$(cat /tmp/stage.ip 2>/dev/null | tr -d '[:space:]' || echo "0.0.0.0")
+          PROD_IP=$(cat /tmp/prod.ip 2>/dev/null | tr -d '[:space:]' || echo "0.0.0.0")
+  
           echo "dev_vm_ip=$DEV_IP" >> $GITHUB_OUTPUT
-          echo "stage_vm_ip=$stage_IP" >> $GITHUB_OUTPUT
+          echo "stage_vm_ip=$STAGE_IP" >> $GITHUB_OUTPUT
           echo "prod_vm_ip=$PROD_IP" >> $GITHUB_OUTPUT
 
           echo "✅ Dev IP: $DEV_IP"
-          echo "✅ stage IP: $stage_IP"
+          echo "✅ stage IP: $STAGE _IP"
           echo "✅ Prod IP: $PROD_IP"
 
       - name: Setup Terraform
