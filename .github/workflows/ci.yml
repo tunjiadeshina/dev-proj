@@ -686,7 +686,7 @@ jobs:
 
               - job_name: 'node-stage'
                 static_configs:
-                  - targets: ['${stage_VM_IP}:9100']
+                  - targets: ['${STAGE_VM_IP}:9100']
                     labels:
                       env: 'stage'
                       vm: 'stage-vm'
@@ -740,6 +740,6 @@ jobs:
             sudo docker ps
         env:
           DEV_VM_IP: ${{ needs.terraform-monitoring.outputs.dev_vm_ip }}
-          stage_VM_IP: ${{ needs.terraform-monitoring.outputs.stage_vm_ip }}
+          STAGE_VM_IP: ${{ needs.terraform-monitoring.outputs.stage_vm_ip }}
           PROD_VM_IP: ${{ needs.terraform-monitoring.outputs.prod_vm_ip }}
           
