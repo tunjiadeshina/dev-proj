@@ -135,6 +135,7 @@ jobs:
             --file /tmp/dev.ip \
             --overwrite \
             --connection-string "${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}"
+
   # ── 4. Deploy to Dev ──────────────────────────────────────────
   deploy-dev:
     needs: terraform-dev
@@ -239,7 +240,29 @@ jobs:
             echo "✅ App and Node Exporter running on dev"
             sudo docker ps
 
-  # ── 5. Terraform - stage ────────────────────────────────────
+  # ── Auto promote Dev → Stage ──────────────────────────────────
+  promote-dev-to-stage:
+    needs: deploy-dev
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/dev' && github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PAT_TOKEN }}
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge dev into stage
+        run: |
+          git checkout stage
+          git merge dev --no-edit
+          git push origin stage
+
+  # ── 5. Terraform - Stage ──────────────────────────────────────
   terraform-stage:
     needs: docker-build-push
     runs-on: ubuntu-latest
@@ -279,7 +302,7 @@ jobs:
         id: tf_output
         run: echo "vm_ip=$(terraform output -raw vm_public_ip)" >> $GITHUB_OUTPUT
 
-      - name: Save stage VM IP to blob storage
+      - name: Save Stage VM IP to blob storage
         run: |
           echo "${{ steps.tf_output.outputs.vm_ip }}" > /tmp/stage.ip
           az storage blob upload \
@@ -290,7 +313,7 @@ jobs:
             --overwrite \
             --connection-string "${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}"
 
-  # ── 6. Deploy to stage ──────────────────────────────────────
+  # ── 6. Deploy to Stage ────────────────────────────────────────
   deploy-stage:
     needs: terraform-stage
     runs-on: ubuntu-latest
@@ -298,7 +321,7 @@ jobs:
     environment:
       name: stage
     steps:
-      - name: Deploy to stage VM
+      - name: Deploy to Stage VM
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ needs.terraform-stage.outputs.vm_ip }}
@@ -393,6 +416,30 @@ jobs:
 
             echo "✅ App and Node Exporter running on stage"
             sudo docker ps
+
+  # ── Auto promote Stage → Prod (manual approval gate) ──────────
+  promote-stage-to-prod:
+    needs: deploy-stage
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/stage' && github.event_name == 'push'
+    environment:
+      name: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PAT_TOKEN }}
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge stage into main
+        run: |
+          git checkout main
+          git merge stage --no-edit
+          git push origin main
 
   # ── 7. Terraform - Prod ───────────────────────────────────────
   terraform-prod:
@@ -575,36 +622,40 @@ jobs:
       - name: Read all VM IPs from blob storage
         id: read_ips
         run: |
-          DEV_IP=$(az storage blob download \
+          az storage blob download \
             --account-name tfstatedevops \
             --container-name tfstate \
             --name vm-ips/dev.ip \
             --file /tmp/dev.ip \
-            --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
-            2>/dev/null && cat /tmp/dev.ip || echo "0.0.0.0")
+            --connection-string "${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
+            > /dev/null 2>&1 || true
 
-          stage_IP=$(az storage blob download \
+          az storage blob download \
             --account-name tfstatedevops \
             --container-name tfstate \
             --name vm-ips/stage.ip \
             --file /tmp/stage.ip \
-            --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
-            2>/dev/null && cat /tmp/stage.ip || echo "0.0.0.0")
+            --connection-string "${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
+            > /dev/null 2>&1 || true
 
-          PROD_IP=$(az storage blob download \
+          az storage blob download \
             --account-name tfstatedevops \
             --container-name tfstate \
             --name vm-ips/prod.ip \
             --file /tmp/prod.ip \
-            --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
-            2>/dev/null && cat /tmp/prod.ip || echo "0.0.0.0")
+            --connection-string "${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" \
+            > /dev/null 2>&1 || true
+
+          DEV_IP=$(cat /tmp/dev.ip 2>/dev/null | tr -d '[:space:]' || echo "0.0.0.0")
+          STAGE_IP=$(cat /tmp/stage.ip 2>/dev/null | tr -d '[:space:]' || echo "0.0.0.0")
+          PROD_IP=$(cat /tmp/prod.ip 2>/dev/null | tr -d '[:space:]' || echo "0.0.0.0")
 
           echo "dev_vm_ip=$DEV_IP" >> $GITHUB_OUTPUT
-          echo "stage_vm_ip=$stage_IP" >> $GITHUB_OUTPUT
+          echo "stage_vm_ip=$STAGE_IP" >> $GITHUB_OUTPUT
           echo "prod_vm_ip=$PROD_IP" >> $GITHUB_OUTPUT
 
           echo "✅ Dev IP: $DEV_IP"
-          echo "✅ stage IP: $stage_IP"
+          echo "✅ Stage IP: $STAGE_IP"
           echo "✅ Prod IP: $PROD_IP"
 
       - name: Setup Terraform
@@ -650,7 +701,13 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           command_timeout: 15m
+          envs: DEV_VM_IP,STAGE_VM_IP,PROD_VM_IP
           script: |
+            # ── Verify IPs ────────────────────────────────────────
+            echo "DEV_VM_IP=$DEV_VM_IP"
+            echo "STAGE_VM_IP=$STAGE_VM_IP"
+            echo "PROD_VM_IP=$PROD_VM_IP"
+
             # ── Bootstrap Docker ─────────────────────────────────
             if ! command -v docker &> /dev/null; then
               sudo apt-get update -y
@@ -671,7 +728,7 @@ jobs:
 
             # ── Write Prometheus config ───────────────────────────
             sudo mkdir -p /etc/prometheus
-            sudo tee /etc/prometheus/prometheus.yml > /dev/null <<EOF
+            sudo tee /etc/prometheus/prometheus.yml > /dev/null << PROMEOF
             global:
               scrape_interval: 15s
               evaluation_interval: 15s
@@ -686,7 +743,7 @@ jobs:
 
               - job_name: 'node-stage'
                 static_configs:
-                  - targets: ['${stage_VM_IP}:9100']
+                  - targets: ['${STAGE_VM_IP}:9100']
                     labels:
                       env: 'stage'
                       vm: 'stage-vm'
@@ -697,11 +754,14 @@ jobs:
                     labels:
                       env: 'prod'
                       vm: 'prod-vm'
-            EOF
+            PROMEOF
+
+            echo "✅ Prometheus config:"
+            cat /etc/prometheus/prometheus.yml
 
             # ── Write Grafana datasource provisioning ─────────────
             sudo mkdir -p /etc/grafana/provisioning/datasources
-            sudo tee /etc/grafana/provisioning/datasources/prometheus.yaml > /dev/null <<EOF
+            sudo tee /etc/grafana/provisioning/datasources/prometheus.yaml > /dev/null << GRAFEOF
             apiVersion: 1
             datasources:
               - name: Prometheus
@@ -711,7 +771,55 @@ jobs:
                 isDefault: true
                 jsonData:
                   timeInterval: "15s"
-            EOF
+            GRAFEOF
+
+            # ── Write Grafana dashboard provisioning config ────────
+            sudo mkdir -p /etc/grafana/provisioning/dashboards
+            sudo tee /etc/grafana/provisioning/dashboards/default.yaml > /dev/null << DASHPROVEOF
+            apiVersion: 1
+            providers:
+              - name: default
+                folder: DevOps
+                type: file
+                disableDeletion: false
+                updateIntervalSeconds: 30
+                allowUiUpdates: true
+                options:
+                  path: /var/lib/grafana/dashboards
+            DASHPROVEOF
+
+            # ── Write dashboard JSON ───────────────────────────────
+            sudo mkdir -p /var/lib/grafana/dashboards
+            sudo tee /var/lib/grafana/dashboards/devops-dashboard.json > /dev/null << 'DASHEOF'
+            {
+              "annotations": {"list": [{"builtIn": 1,"datasource": "-- Grafana --","enable": true,"hide": true,"iconColor": "rgba(0, 211, 255, 1)","name": "Annotations & Alerts","type": "dashboard"}]},
+              "templating": {
+                "list": [{"name": "env","type": "custom","label": "Environment","query": "dev,stage,prod","current": {"text": "All","value": "$__all"},"options": [{"text": "All","value": "$__all","selected": true},{"text": "dev","value": "dev"},{"text": "stage","value": "stage"},{"text": "prod","value": "prod"}],"includeAll": true,"multi": true,"hide": 0}]
+              },
+              "panels": [
+                {"datasource": "Prometheus","title": "App Requests by Environment","type": "timeseries","targets": [{"expr": "sum(rate(app_requests_total{env=~\"$env\"}[1m])) by (env)","legendFormat": "{{env}} requests","refId": "A"}],"gridPos": {"x": 0,"y": 0,"w": 12,"h": 6},"fieldConfig": {"defaults": {"custom": {"lineWidth": 2},"color": {"mode": "palette-classic"}},"overrides": [{"matcher": {"id": "byName","options": "dev requests"},"properties": [{"id": "color","value": {"fixedColor": "#73BF69","mode": "fixed"}}]},{"matcher": {"id": "byName","options": "stage requests"},"properties": [{"id": "color","value": {"fixedColor": "#F2CC0C","mode": "fixed"}}]},{"matcher": {"id": "byName","options": "prod requests"},"properties": [{"id": "color","value": {"fixedColor": "#F15B26","mode": "fixed"}}]}]}},
+                {"datasource": "Prometheus","title": "Request Latency 95th Percentile by Environment","type": "timeseries","targets": [{"expr": "histogram_quantile(0.95, sum(rate(app_request_duration_seconds_bucket{env=~\"$env\"}[1m])) by (le, env)) * 1000","legendFormat": "{{env}} p95 latency","refId": "A"}],"gridPos": {"x": 12,"y": 0,"w": 12,"h": 6},"fieldConfig": {"defaults": {"unit": "ms","custom": {"lineWidth": 2}}}},
+                {"datasource": "Prometheus","title": "HTTP Status Codes by Environment","type": "timeseries","targets": [{"expr": "sum(rate(app_request_status_total{env=~\"$env\"}[1m])) by (status, env)","legendFormat": "{{env}} HTTP {{status}}","refId": "A"}],"gridPos": {"x": 0,"y": 6,"w": 12,"h": 6}},
+                {"datasource": "Prometheus","title": "CPU Usage by Environment","type": "timeseries","targets": [{"expr": "100 - (avg by(env, vm) (irate(node_cpu_seconds_total{mode=\"idle\", env=~\"$env\"}[5m])) * 100)","legendFormat": "{{env}} - {{vm}}","refId": "A"}],"gridPos": {"x": 12,"y": 6,"w": 12,"h": 6},"fieldConfig": {"defaults": {"unit": "percent","min": 0,"max": 100,"thresholds": {"mode": "absolute","steps": [{"color": "green","value": null},{"color": "yellow","value": 70},{"color": "red","value": 90}]}}}},
+                {"datasource": "Prometheus","title": "Memory Usage by Environment","type": "timeseries","targets": [{"expr": "node_memory_MemTotal_bytes{env=~\"$env\"} - node_memory_MemAvailable_bytes{env=~\"$env\"}","legendFormat": "{{env}} - {{vm}} used","refId": "A"}],"gridPos": {"x": 0,"y": 12,"w": 12,"h": 6},"fieldConfig": {"defaults": {"unit": "bytes"}}},
+                {"datasource": "Prometheus","title": "Memory Usage % by Environment","type": "gauge","targets": [{"expr": "100 * (1 - node_memory_MemAvailable_bytes{env=~\"$env\"} / node_memory_MemTotal_bytes{env=~\"$env\"})","legendFormat": "{{env}} - {{vm}}","refId": "A"}],"gridPos": {"x": 12,"y": 12,"w": 12,"h": 6},"fieldConfig": {"defaults": {"unit": "percent","min": 0,"max": 100,"thresholds": {"mode": "absolute","steps": [{"color": "green","value": null},{"color": "yellow","value": 70},{"color": "red","value": 90}]}}}},
+                {"datasource": "Prometheus","title": "Network Inbound by Environment","type": "timeseries","targets": [{"expr": "rate(node_network_receive_bytes_total{env=~\"$env\", device!=\"lo\"}[1m])","legendFormat": "{{env}} - {{vm}} {{device}} RX","refId": "A"}],"gridPos": {"x": 0,"y": 18,"w": 12,"h": 6},"fieldConfig": {"defaults": {"unit": "Bps"}}},
+                {"datasource": "Prometheus","title": "Network Outbound by Environment","type": "timeseries","targets": [{"expr": "rate(node_network_transmit_bytes_total{env=~\"$env\", device!=\"lo\"}[1m])","legendFormat": "{{env}} - {{vm}} {{device}} TX","refId": "A"}],"gridPos": {"x": 12,"y": 18,"w": 12,"h": 6},"fieldConfig": {"defaults": {"unit": "Bps"}}},
+                {"datasource": "Prometheus","title": "Disk Usage by Environment","type": "timeseries","targets": [{"expr": "100 - ((node_filesystem_avail_bytes{env=~\"$env\", mountpoint=\"/\", fstype!=\"tmpfs\"} / node_filesystem_size_bytes{env=~\"$env\", mountpoint=\"/\", fstype!=\"tmpfs\"}) * 100)","legendFormat": "{{env}} - {{vm}} disk %","refId": "A"}],"gridPos": {"x": 0,"y": 24,"w": 12,"h": 6},"fieldConfig": {"defaults": {"unit": "percent","min": 0,"max": 100,"thresholds": {"mode": "absolute","steps": [{"color": "green","value": null},{"color": "yellow","value": 75},{"color": "red","value": 90}]}}}},
+                {"datasource": "Prometheus","title": "Node Targets Health","type": "stat","targets": [{"expr": "up{env=~\"$env\"}","legendFormat": "{{env}} - {{vm}}","refId": "A"}],"gridPos": {"x": 12,"y": 24,"w": 12,"h": 6},"fieldConfig": {"defaults": {"mappings": [{"type": "value","options": {"0": {"text": "DOWN","color": "red"},"1": {"text": "UP","color": "green"}}}],"thresholds": {"mode": "absolute","steps": [{"color": "red","value": null},{"color": "green","value": 1}]}}}}
+              ],
+              "schemaVersion": 36,
+              "version": 3,
+              "title": "DevOps App Multi-Environment Dashboard",
+              "tags": ["devops", "multi-env"],
+              "time": {"from": "now-1h","to": "now"},
+              "refresh": "30s"
+            }
+            DASHEOF
+
+            # ── Fix permissions ───────────────────────────────────
+            sudo chmod -R 755 /var/lib/grafana/dashboards
+            sudo chmod -R 755 /etc/grafana/provisioning
 
             # ── Deploy Prometheus ─────────────────────────────────
             sudo docker stop prometheus || true
@@ -733,6 +841,7 @@ jobs:
               --restart unless-stopped \
               -v grafana-storage:/var/lib/grafana \
               -v /etc/grafana/provisioning:/etc/grafana/provisioning \
+              -v /var/lib/grafana/dashboards:/var/lib/grafana/dashboards \
               grafana/grafana
 
             echo "✅ Prometheus running at http://$HOSTNAME:9090"
@@ -740,6 +849,8 @@ jobs:
             sudo docker ps
         env:
           DEV_VM_IP: ${{ needs.terraform-monitoring.outputs.dev_vm_ip }}
-          stage_VM_IP: ${{ needs.terraform-monitoring.outputs.stage_vm_ip }}
+          STAGE_VM_IP: ${{ needs.terraform-monitoring.outputs.stage_vm_ip }}
           PROD_VM_IP: ${{ needs.terraform-monitoring.outputs.prod_vm_ip }}
+
           
+          #Add dummy changes
