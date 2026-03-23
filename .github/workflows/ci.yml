@@ -258,6 +258,7 @@ jobs:
 
       - name: Merge dev into stage
         run: |
+          git remote set-url origin https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/tunjiadeshina/dev-proj.git
           git checkout stage
           git merge dev --no-edit
           git push origin stage
@@ -437,6 +438,7 @@ jobs:
 
       - name: Merge stage into main
         run: |
+          git remote set-url origin https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/tunjiadeshina/dev-proj.git
           git checkout main
           git merge stage --no-edit
           git push origin main
