@@ -2,7 +2,7 @@
 terraform {
   backend "azurerm" {
     resource_group_name  = "tfstate-rg"
-    storage_account_name = "tfstatedevops"
+    storage_account_name = "belvadtfstate"
     container_name       = "tfstate"
     key                  = "monitoring.terraform.tfstate"
   }
