@@ -1,4 +1,9 @@
 # terraform/monitoring/variables.tf
+variable "ssh_allowed_cidr" {
+  description = "CIDR range allowed to SSH (e.g. VPN or office IP)"
+  type        = string
+}
+
 variable "location" {
   default = "canadacentral"
 }

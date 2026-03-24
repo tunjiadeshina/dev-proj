@@ -1,0 +1,6 @@
+# jaraco.context - transitive dependency, not directly installable
+# Fixed version available but pulled in via bundled metadata
+CVE-2026-23949
+
+# wheel - transitive dependency bundled in base image
+CVE-2026-24049
