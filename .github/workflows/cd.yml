@@ -51,10 +51,12 @@ jobs:
       - run: terraform plan -out=tfplan
         env:
           TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
+          TF_VAR_ssh_allowed_cidr: ${{ secrets.SSH_ALLOWED_CIDR }}
 
       - run: terraform apply -auto-approve tfplan
         env:
           TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
+          TF_VAR_ssh_allowed_cidr: ${{ secrets.SSH_ALLOWED_CIDR }}
 
       - name: Get VM IP
         id: tf_output
@@ -183,10 +185,12 @@ jobs:
       - run: terraform plan -out=tfplan
         env:
           TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
+          TF_VAR_ssh_allowed_cidr: ${{ secrets.SSH_ALLOWED_CIDR }}
 
       - run: terraform apply -auto-approve tfplan
         env:
           TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
+          TF_VAR_ssh_allowed_cidr: ${{ secrets.SSH_ALLOWED_CIDR }}
 
       - name: Get VM IP
         id: tf_output
@@ -319,10 +323,12 @@ jobs:
       - run: terraform plan -out=tfplan
         env:
           TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
+          TF_VAR_ssh_allowed_cidr: ${{ secrets.SSH_ALLOWED_CIDR }}
 
       - run: terraform apply -auto-approve tfplan
         env:
           TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
+          TF_VAR_ssh_allowed_cidr: ${{ secrets.SSH_ALLOWED_CIDR }}
 
       - name: Get VM IP
         id: tf_output
