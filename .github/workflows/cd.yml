@@ -11,12 +11,23 @@ env:
   ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
   ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
 
-# Only run CD when CI succeeded
 jobs:
+  # ── Guard: only run if CI passed ──────────────────────────────
+  check-ci:
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success'
+    outputs:
+      branch: ${{ steps.get_branch.outputs.branch }}
+    steps:
+      - name: Get triggering branch
+        id: get_branch
+        run: echo "branch=${{ github.event.workflow_run.head_branch }}" >> $GITHUB_OUTPUT
+
   # ── 1. Terraform - Dev ────────────────────────────────────────
   terraform-dev:
+    needs: check-ci
     runs-on: ubuntu-latest
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'dev'
+    if: needs.check-ci.outputs.branch == 'dev'
     defaults:
       run:
         working-directory: terraform/dev
@@ -24,6 +35,8 @@ jobs:
       vm_ip: ${{ steps.tf_output.outputs.vm_ip }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: dev
 
       - name: Azure Login
         uses: azure/login@v1
@@ -62,6 +75,7 @@ jobs:
   deploy-dev:
     needs: terraform-dev
     runs-on: ubuntu-latest
+    if: needs.terraform-dev.result == 'success'
     environment:
       name: dev
     steps:
@@ -124,6 +138,7 @@ jobs:
   promote-dev-to-stage:
     needs: deploy-dev
     runs-on: ubuntu-latest
+    if: needs.deploy-dev.result == 'success'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -142,8 +157,9 @@ jobs:
 
   # ── 4. Terraform - Stage ──────────────────────────────────────
   terraform-stage:
+    needs: check-ci
     runs-on: ubuntu-latest
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'stage'
+    if: needs.check-ci.outputs.branch == 'stage'
     defaults:
       run:
         working-directory: terraform/stage
@@ -151,6 +167,8 @@ jobs:
       vm_ip: ${{ steps.tf_output.outputs.vm_ip }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: stage
 
       - name: Azure Login
         uses: azure/login@v1
@@ -189,6 +207,7 @@ jobs:
   deploy-stage:
     needs: terraform-stage
     runs-on: ubuntu-latest
+    if: needs.terraform-stage.result == 'success'
     environment:
       name: stage
     steps:
@@ -247,10 +266,11 @@ jobs:
 
             echo "✅ Stage deployment complete" && sudo docker ps
 
-  # ── 6. Promote Stage → Prod (requires production approval) ────
+  # ── 6. Promote Stage → Prod (manual approval gate) ────────────
   promote-stage-to-prod:
     needs: deploy-stage
     runs-on: ubuntu-latest
+    if: needs.deploy-stage.result == 'success'
     environment:
       name: production
     steps:
@@ -271,8 +291,9 @@ jobs:
 
   # ── 7. Terraform - Prod ───────────────────────────────────────
   terraform-prod:
+    needs: check-ci
     runs-on: ubuntu-latest
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
+    if: needs.check-ci.outputs.branch == 'main'
     environment:
       name: production
     defaults:
@@ -282,6 +303,8 @@ jobs:
       vm_ip: ${{ steps.tf_output.outputs.vm_ip }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Azure Login
         uses: azure/login@v1
@@ -320,6 +343,7 @@ jobs:
   deploy-prod:
     needs: terraform-prod
     runs-on: ubuntu-latest
+    if: needs.terraform-prod.result == 'success'
     environment:
       name: production
     steps:
