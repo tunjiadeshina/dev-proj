@@ -2,3 +2,5 @@ flask
 pytest
 prometheus_client
 werkzeug
+jaraco.context>=6.1.0
+wheel>=0.46.2
