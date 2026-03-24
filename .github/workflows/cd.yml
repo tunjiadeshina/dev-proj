@@ -48,6 +48,27 @@ jobs:
           terraform_wrapper: false
 
       - run: terraform init
+
+      - name: Migrate state to module addresses
+        run: |
+          migrate() { terraform state mv "$1" "$2" 2>/dev/null || true; }
+          migrate azurerm_resource_group.rg                                        module.vm.azurerm_resource_group.rg
+          migrate azurerm_network_security_group.nsg                               module.vm.azurerm_network_security_group.nsg
+          migrate azurerm_network_security_rule.ssh                                module.vm.azurerm_network_security_rule.ssh
+          migrate azurerm_network_security_rule.http                               module.vm.azurerm_network_security_rule.http
+          migrate azurerm_network_security_rule.http9090                           module.vm.azurerm_network_security_rule.http9090
+          migrate azurerm_network_security_rule.http3000                           module.vm.azurerm_network_security_rule.http3000
+          migrate azurerm_network_security_rule.http9100                           module.vm.azurerm_network_security_rule.http9100
+          migrate azurerm_subnet_network_security_group_association.nsg_assoc      module.vm.azurerm_subnet_network_security_group_association.nsg_assoc
+          migrate azurerm_virtual_network.vnet                                     module.vm.azurerm_virtual_network.vnet
+          migrate azurerm_subnet.subnet                                            module.vm.azurerm_subnet.subnet
+          migrate azurerm_public_ip.public_ip                                      module.vm.azurerm_public_ip.public_ip
+          migrate azurerm_network_interface.nic                                    module.vm.azurerm_network_interface.nic
+          migrate azurerm_linux_virtual_machine.vm                                 module.vm.azurerm_linux_virtual_machine.vm
+        env:
+          TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
+          TF_VAR_ssh_allowed_cidr: ${{ secrets.SSH_ALLOWED_CIDR }}
+
       - run: terraform plan -out=tfplan
         env:
           TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
@@ -182,6 +203,27 @@ jobs:
           terraform_wrapper: false
 
       - run: terraform init
+
+      - name: Migrate state to module addresses
+        run: |
+          migrate() { terraform state mv "$1" "$2" 2>/dev/null || true; }
+          migrate azurerm_resource_group.rg                                        module.vm.azurerm_resource_group.rg
+          migrate azurerm_network_security_group.nsg                               module.vm.azurerm_network_security_group.nsg
+          migrate azurerm_network_security_rule.ssh                                module.vm.azurerm_network_security_rule.ssh
+          migrate azurerm_network_security_rule.http                               module.vm.azurerm_network_security_rule.http
+          migrate azurerm_network_security_rule.http9090                           module.vm.azurerm_network_security_rule.http9090
+          migrate azurerm_network_security_rule.http3000                           module.vm.azurerm_network_security_rule.http3000
+          migrate azurerm_network_security_rule.http9100                           module.vm.azurerm_network_security_rule.http9100
+          migrate azurerm_subnet_network_security_group_association.nsg_assoc      module.vm.azurerm_subnet_network_security_group_association.nsg_assoc
+          migrate azurerm_virtual_network.vnet                                     module.vm.azurerm_virtual_network.vnet
+          migrate azurerm_subnet.subnet                                            module.vm.azurerm_subnet.subnet
+          migrate azurerm_public_ip.public_ip                                      module.vm.azurerm_public_ip.public_ip
+          migrate azurerm_network_interface.nic                                    module.vm.azurerm_network_interface.nic
+          migrate azurerm_linux_virtual_machine.vm                                 module.vm.azurerm_linux_virtual_machine.vm
+        env:
+          TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
+          TF_VAR_ssh_allowed_cidr: ${{ secrets.SSH_ALLOWED_CIDR }}
+
       - run: terraform plan -out=tfplan
         env:
           TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
@@ -320,6 +362,27 @@ jobs:
           terraform_wrapper: false
 
       - run: terraform init
+
+      - name: Migrate state to module addresses
+        run: |
+          migrate() { terraform state mv "$1" "$2" 2>/dev/null || true; }
+          migrate azurerm_resource_group.rg                                        module.vm.azurerm_resource_group.rg
+          migrate azurerm_network_security_group.nsg                               module.vm.azurerm_network_security_group.nsg
+          migrate azurerm_network_security_rule.ssh                                module.vm.azurerm_network_security_rule.ssh
+          migrate azurerm_network_security_rule.http                               module.vm.azurerm_network_security_rule.http
+          migrate azurerm_network_security_rule.http9090                           module.vm.azurerm_network_security_rule.http9090
+          migrate azurerm_network_security_rule.http3000                           module.vm.azurerm_network_security_rule.http3000
+          migrate azurerm_network_security_rule.http9100                           module.vm.azurerm_network_security_rule.http9100
+          migrate azurerm_subnet_network_security_group_association.nsg_assoc      module.vm.azurerm_subnet_network_security_group_association.nsg_assoc
+          migrate azurerm_virtual_network.vnet                                     module.vm.azurerm_virtual_network.vnet
+          migrate azurerm_subnet.subnet                                            module.vm.azurerm_subnet.subnet
+          migrate azurerm_public_ip.public_ip                                      module.vm.azurerm_public_ip.public_ip
+          migrate azurerm_network_interface.nic                                    module.vm.azurerm_network_interface.nic
+          migrate azurerm_linux_virtual_machine.vm                                 module.vm.azurerm_linux_virtual_machine.vm
+        env:
+          TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
+          TF_VAR_ssh_allowed_cidr: ${{ secrets.SSH_ALLOWED_CIDR }}
+
       - run: terraform plan -out=tfplan
         env:
           TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
