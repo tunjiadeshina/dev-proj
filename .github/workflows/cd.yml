@@ -14,18 +14,10 @@ env:
 
 # Only run CD when CI succeeded
 jobs:
-  # ── Guard ─────────────────────────────────────────────────────
-  check-ci:
-    runs-on: ubuntu-latest
-    if: github.event.workflow_run.conclusion == 'success'
-    steps:
-      - run: echo "CI passed — proceeding with deployment"
-
   # ── 1. Terraform - Dev ────────────────────────────────────────
   terraform-dev:
-    needs: check-ci
     runs-on: ubuntu-latest
-    if: github.event.workflow_run.head_branch == 'dev'
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'dev'
     defaults:
       run:
         working-directory: terraform/dev
@@ -151,9 +143,8 @@ jobs:
 
   # ── 4. Terraform - Stage ──────────────────────────────────────
   terraform-stage:
-    needs: check-ci
     runs-on: ubuntu-latest
-    if: github.event.workflow_run.head_branch == 'stage'
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'stage'
     defaults:
       run:
         working-directory: terraform/stage
@@ -281,9 +272,8 @@ jobs:
 
   # ── 7. Terraform - Prod ───────────────────────────────────────
   terraform-prod:
-    needs: check-ci
     runs-on: ubuntu-latest
-    if: github.event.workflow_run.head_branch == 'main'
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
     environment:
       name: production
     defaults:
