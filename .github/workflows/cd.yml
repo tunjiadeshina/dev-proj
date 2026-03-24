@@ -1,0 +1,390 @@
+name: CD
+
+on:
+  workflow_run:
+    workflows: [ "CI" ]
+    types: [ completed ]
+    branches: [ "dev", "stage", "main" ]
+
+env:
+  ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+  ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+  ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+
+# Only run CD when CI succeeded
+jobs:
+  # ── Guard ─────────────────────────────────────────────────────
+  check-ci:
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success'
+    steps:
+      - run: echo "CI passed — proceeding with deployment"
+
+  # ── 1. Terraform - Dev ────────────────────────────────────────
+  terraform-dev:
+    needs: check-ci
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.head_branch == 'dev'
+    defaults:
+      run:
+        working-directory: terraform/dev
+    outputs:
+      vm_ip: ${{ steps.tf_output.outputs.vm_ip }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: '{"clientId":"${{ secrets.ARM_CLIENT_ID }}","clientSecret":"${{ secrets.ARM_CLIENT_SECRET }}","subscriptionId":"${{ secrets.ARM_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.ARM_TENANT_ID }}"}'
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - run: terraform init
+      - run: terraform plan -out=tfplan
+        env:
+          TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
+
+      - run: terraform apply -auto-approve tfplan
+        env:
+          TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
+
+      - name: Get VM IP
+        id: tf_output
+        run: echo "vm_ip=$(terraform output -raw vm_public_ip)" >> $GITHUB_OUTPUT
+
+      - name: Save Dev VM IP to blob storage
+        run: |
+          echo "${{ steps.tf_output.outputs.vm_ip }}" > /tmp/dev.ip
+          az storage blob upload \
+            --account-name tfstatedevops \
+            --container-name tfstate \
+            --name vm-ips/dev.ip \
+            --file /tmp/dev.ip \
+            --overwrite \
+            --connection-string "${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}"
+
+  # ── 2. Deploy to Dev ──────────────────────────────────────────
+  deploy-dev:
+    needs: terraform-dev
+    runs-on: ubuntu-latest
+    environment:
+      name: dev
+    steps:
+      - name: Deploy to Dev VM
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ needs.terraform-dev.outputs.vm_ip }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 10m
+          script: |
+            if ! command -v docker &> /dev/null; then
+              sudo apt-get update -y
+              sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+              sudo apt-get install -y ca-certificates curl gnupg
+              sudo install -m 0755 -d /etc/apt/keyrings
+              curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+                sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+              echo \
+                "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+                https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
+                sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+              sudo apt-get update -y
+              sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+            fi
+            sudo systemctl enable docker && sudo systemctl start docker
+
+            IMAGE="adetunjiadeshina/devops-app:dev"
+            VERSION="${GITHUB_REF_NAME}-$(echo $GITHUB_SHA | cut -c1-7)"
+            PREVIOUS_IMAGE=$(sudo docker inspect --format='{{.Config.Image}}' devops-app 2>/dev/null || echo "")
+
+            sudo docker pull $IMAGE
+            sudo docker stop devops-app || true
+            sudo docker rm devops-app || true
+            sudo docker run -d -p 80:8000 --name devops-app --restart unless-stopped \
+              -e APP_VERSION=$VERSION -e APP_COMMIT=$GITHUB_SHA -e APP_ENV=dev $IMAGE
+
+            sleep 10
+            if curl -f http://localhost/health; then
+              echo "✅ Deployment successful!"
+            else
+              echo "❌ Health check failed — rolling back..."
+              sudo docker stop devops-app || true && sudo docker rm devops-app || true
+              [ -n "$PREVIOUS_IMAGE" ] && sudo docker run -d -p 80:8000 --name devops-app \
+                --restart unless-stopped $PREVIOUS_IMAGE || echo "⚠️ No previous image to roll back to"
+              exit 1
+            fi
+
+            sudo docker stop node-exporter || true && sudo docker rm node-exporter || true
+            sudo docker run -d --name node-exporter --restart unless-stopped \
+              --network="host" --pid="host" \
+              -v /proc:/host/proc:ro -v /sys:/host/sys:ro -v /:/rootfs:ro \
+              prom/node-exporter \
+              --path.procfs=/host/proc --path.sysfs=/host/sys --path.rootfs=/rootfs \
+              --collector.filesystem.mount-points-exclude='^/(sys|proc|dev|host|etc)($$|/)'
+
+            echo "✅ Dev deployment complete" && sudo docker ps
+
+  # ── 3. Promote Dev → Stage ────────────────────────────────────
+  promote-dev-to-stage:
+    needs: deploy-dev
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PAT_TOKEN }}
+          fetch-depth: 0
+
+      - name: Merge dev into stage
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository }}.git
+          git fetch --all
+          git checkout stage
+          git merge origin/dev --no-edit -X theirs
+          git push origin stage
+
+  # ── 4. Terraform - Stage ──────────────────────────────────────
+  terraform-stage:
+    needs: check-ci
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.head_branch == 'stage'
+    defaults:
+      run:
+        working-directory: terraform/stage
+    outputs:
+      vm_ip: ${{ steps.tf_output.outputs.vm_ip }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: '{"clientId":"${{ secrets.ARM_CLIENT_ID }}","clientSecret":"${{ secrets.ARM_CLIENT_SECRET }}","subscriptionId":"${{ secrets.ARM_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.ARM_TENANT_ID }}"}'
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - run: terraform init
+      - run: terraform plan -out=tfplan
+        env:
+          TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
+
+      - run: terraform apply -auto-approve tfplan
+        env:
+          TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
+
+      - name: Get VM IP
+        id: tf_output
+        run: echo "vm_ip=$(terraform output -raw vm_public_ip)" >> $GITHUB_OUTPUT
+
+      - name: Save Stage VM IP to blob storage
+        run: |
+          echo "${{ steps.tf_output.outputs.vm_ip }}" > /tmp/stage.ip
+          az storage blob upload \
+            --account-name tfstatedevops \
+            --container-name tfstate \
+            --name vm-ips/stage.ip \
+            --file /tmp/stage.ip \
+            --overwrite \
+            --connection-string "${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}"
+
+  # ── 5. Deploy to Stage ────────────────────────────────────────
+  deploy-stage:
+    needs: terraform-stage
+    runs-on: ubuntu-latest
+    environment:
+      name: stage
+    steps:
+      - name: Deploy to Stage VM
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ needs.terraform-stage.outputs.vm_ip }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 10m
+          script: |
+            if ! command -v docker &> /dev/null; then
+              sudo apt-get update -y
+              sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+              sudo apt-get install -y ca-certificates curl gnupg
+              sudo install -m 0755 -d /etc/apt/keyrings
+              curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+                sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+              echo \
+                "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+                https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
+                sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+              sudo apt-get update -y
+              sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+            fi
+            sudo systemctl enable docker && sudo systemctl start docker
+
+            IMAGE="adetunjiadeshina/devops-app:stage"
+            VERSION="${GITHUB_REF_NAME}-$(echo $GITHUB_SHA | cut -c1-7)"
+            PREVIOUS_IMAGE=$(sudo docker inspect --format='{{.Config.Image}}' devops-app 2>/dev/null || echo "")
+
+            sudo docker pull $IMAGE
+            sudo docker stop devops-app || true
+            sudo docker rm devops-app || true
+            sudo docker run -d -p 80:8000 --name devops-app --restart unless-stopped \
+              -e APP_VERSION=$VERSION -e APP_COMMIT=$GITHUB_SHA -e APP_ENV=stage $IMAGE
+
+            sleep 10
+            if curl -f http://localhost/health; then
+              echo "✅ Deployment successful!"
+            else
+              echo "❌ Health check failed — rolling back..."
+              sudo docker stop devops-app || true && sudo docker rm devops-app || true
+              [ -n "$PREVIOUS_IMAGE" ] && sudo docker run -d -p 80:8000 --name devops-app \
+                --restart unless-stopped $PREVIOUS_IMAGE || echo "⚠️ No previous image to roll back to"
+              exit 1
+            fi
+
+            sudo docker stop node-exporter || true && sudo docker rm node-exporter || true
+            sudo docker run -d --name node-exporter --restart unless-stopped \
+              --network="host" --pid="host" \
+              -v /proc:/host/proc:ro -v /sys:/host/sys:ro -v /:/rootfs:ro \
+              prom/node-exporter \
+              --path.procfs=/host/proc --path.sysfs=/host/sys --path.rootfs=/rootfs \
+              --collector.filesystem.mount-points-exclude='^/(sys|proc|dev|host|etc)($$|/)'
+
+            echo "✅ Stage deployment complete" && sudo docker ps
+
+  # ── 6. Promote Stage → Prod (requires production approval) ────
+  promote-stage-to-prod:
+    needs: deploy-stage
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PAT_TOKEN }}
+          fetch-depth: 0
+
+      - name: Merge stage into main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository }}.git
+          git fetch --all
+          git checkout main
+          git merge origin/stage --no-edit -X theirs
+          git push origin main
+
+  # ── 7. Terraform - Prod ───────────────────────────────────────
+  terraform-prod:
+    needs: check-ci
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.head_branch == 'main'
+    environment:
+      name: production
+    defaults:
+      run:
+        working-directory: terraform/prod
+    outputs:
+      vm_ip: ${{ steps.tf_output.outputs.vm_ip }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: '{"clientId":"${{ secrets.ARM_CLIENT_ID }}","clientSecret":"${{ secrets.ARM_CLIENT_SECRET }}","subscriptionId":"${{ secrets.ARM_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.ARM_TENANT_ID }}"}'
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - run: terraform init
+      - run: terraform plan -out=tfplan
+        env:
+          TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
+
+      - run: terraform apply -auto-approve tfplan
+        env:
+          TF_VAR_ssh_public_key: ${{ secrets.VM_SSH_PUBLIC_KEY }}
+
+      - name: Get VM IP
+        id: tf_output
+        run: echo "vm_ip=$(terraform output -raw vm_public_ip)" >> $GITHUB_OUTPUT
+
+      - name: Save Prod VM IP to blob storage
+        run: |
+          echo "${{ steps.tf_output.outputs.vm_ip }}" > /tmp/prod.ip
+          az storage blob upload \
+            --account-name tfstatedevops \
+            --container-name tfstate \
+            --name vm-ips/prod.ip \
+            --file /tmp/prod.ip \
+            --overwrite \
+            --connection-string "${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}"
+
+  # ── 8. Deploy to Prod ─────────────────────────────────────────
+  deploy-prod:
+    needs: terraform-prod
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    steps:
+      - name: Deploy to Prod VM
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ needs.terraform-prod.outputs.vm_ip }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 10m
+          script: |
+            if ! command -v docker &> /dev/null; then
+              sudo apt-get update -y
+              sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+              sudo apt-get install -y ca-certificates curl gnupg
+              sudo install -m 0755 -d /etc/apt/keyrings
+              curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+                sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+              echo \
+                "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+                https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
+                sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+              sudo apt-get update -y
+              sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+            fi
+            sudo systemctl enable docker && sudo systemctl start docker
+
+            IMAGE="adetunjiadeshina/devops-app:prod"
+            VERSION="${GITHUB_REF_NAME}-$(echo $GITHUB_SHA | cut -c1-7)"
+            PREVIOUS_IMAGE=$(sudo docker inspect --format='{{.Config.Image}}' devops-app 2>/dev/null || echo "")
+
+            sudo docker pull $IMAGE
+            sudo docker stop devops-app || true
+            sudo docker rm devops-app || true
+            sudo docker run -d -p 80:8000 --name devops-app --restart unless-stopped \
+              -e APP_VERSION=$VERSION -e APP_COMMIT=$GITHUB_SHA -e APP_ENV=prod $IMAGE
+
+            sleep 10
+            if curl -f http://localhost/health; then
+              echo "✅ Deployment successful!"
+            else
+              echo "❌ Health check failed — rolling back..."
+              sudo docker stop devops-app || true && sudo docker rm devops-app || true
+              [ -n "$PREVIOUS_IMAGE" ] && sudo docker run -d -p 80:8000 --name devops-app \
+                --restart unless-stopped $PREVIOUS_IMAGE || echo "⚠️ No previous image to roll back to"
+              exit 1
+            fi
+
+            sudo docker stop node-exporter || true && sudo docker rm node-exporter || true
+            sudo docker run -d --name node-exporter --restart unless-stopped \
+              --network="host" --pid="host" \
+              -v /proc:/host/proc:ro -v /sys:/host/sys:ro -v /:/rootfs:ro \
+              prom/node-exporter \
+              --path.procfs=/host/proc --path.sysfs=/host/sys --path.rootfs=/rootfs \
+              --collector.filesystem.mount-points-exclude='^/(sys|proc|dev|host|etc)($$|/)'
+
+            echo "✅ Prod deployment complete" && sudo docker ps
