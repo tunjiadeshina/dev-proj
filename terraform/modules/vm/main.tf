@@ -17,7 +17,7 @@ resource "azurerm_network_security_rule" "ssh" {
   protocol                    = "Tcp"
   source_port_range           = "*"
   destination_port_range      = "22"
-  source_address_prefix       = "*"
+  source_address_prefix       = var.ssh_allowed_cidr
   destination_address_prefix  = "*"
   resource_group_name         = azurerm_resource_group.rg.name
   network_security_group_name = azurerm_network_security_group.nsg.name
@@ -31,49 +31,49 @@ resource "azurerm_network_security_rule" "http" {
   protocol                    = "Tcp"
   source_port_range           = "*"
   destination_port_range      = "80"
-  source_address_prefix       = "*"
+  source_address_prefix       = "Internet"
   destination_address_prefix  = "*"
   resource_group_name         = azurerm_resource_group.rg.name
   network_security_group_name = azurerm_network_security_group.nsg.name
 }
 
 resource "azurerm_network_security_rule" "http9090" {
-  name                        = "allow-http9090"
+  name                        = "allow-prometheus"
   priority                    = 1020
   direction                   = "Inbound"
   access                      = "Allow"
   protocol                    = "Tcp"
   source_port_range           = "*"
   destination_port_range      = "9090"
-  source_address_prefix       = "*"
+  source_address_prefix       = var.monitoring_cidr
   destination_address_prefix  = "*"
   resource_group_name         = azurerm_resource_group.rg.name
   network_security_group_name = azurerm_network_security_group.nsg.name
 }
 
 resource "azurerm_network_security_rule" "http3000" {
-  name                        = "allow-http3000"
+  name                        = "allow-grafana"
   priority                    = 1030
   direction                   = "Inbound"
   access                      = "Allow"
   protocol                    = "Tcp"
   source_port_range           = "*"
   destination_port_range      = "3000"
-  source_address_prefix       = "*"
+  source_address_prefix       = var.monitoring_cidr
   destination_address_prefix  = "*"
   resource_group_name         = azurerm_resource_group.rg.name
   network_security_group_name = azurerm_network_security_group.nsg.name
 }
 
 resource "azurerm_network_security_rule" "http9100" {
-  name                        = "allow-http9100"
+  name                        = "allow-node-exporter"
   priority                    = 1040
   direction                   = "Inbound"
   access                      = "Allow"
   protocol                    = "Tcp"
   source_port_range           = "*"
   destination_port_range      = "9100"
-  source_address_prefix       = "*"
+  source_address_prefix       = var.monitoring_cidr
   destination_address_prefix  = "*"
   resource_group_name         = azurerm_resource_group.rg.name
   network_security_group_name = azurerm_network_security_group.nsg.name

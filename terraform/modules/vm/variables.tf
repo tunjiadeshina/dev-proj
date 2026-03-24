@@ -30,3 +30,13 @@ variable "ssh_public_key" {
   type        = string
   sensitive   = true
 }
+
+variable "ssh_allowed_cidr" {
+  description = "CIDR range allowed to SSH into the VM (e.g. VPN or office IP)"
+  type        = string
+}
+
+variable "monitoring_cidr" {
+  description = "CIDR range of the monitoring subnet allowed to scrape metrics ports"
+  type        = string
+}

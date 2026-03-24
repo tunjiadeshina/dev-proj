@@ -3,3 +3,8 @@ variable "ssh_public_key" {
   type        = string
   sensitive   = true
 }
+
+variable "ssh_allowed_cidr" {
+  description = "CIDR range allowed to SSH (e.g. VPN or office IP)"
+  type        = string
+}
